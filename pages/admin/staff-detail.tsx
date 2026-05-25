@@ -37,8 +37,8 @@ export default function StaffDetailPage() {
   }, [user, loading])
 
   useEffect(() => {
-    if (!loading && profile && !isAdmin) router.replace('/dashboard')
-  }, [loading, profile, isAdmin])
+    if (!loading && myProfile && !isAdmin) router.replace('/dashboard')
+  }, [loading, myProfile, isAdmin])
 
   useEffect(() => {
     if (id && isAdmin) {
