@@ -1,0 +1,224 @@
+import { useEffect, useState } from 'react'
+import { useRouter } from 'next/router'
+import Layout from '@/components/Layout'
+import { useAuth } from '@/lib/auth'
+import { supabase, AttendanceRecord, Profile } from '@/lib/supabase'
+import { getCurrentMonth, getMonthRange, formatMinutes, statusLabel } from '@/lib/utils'
+import { format, parseISO } from 'date-fns'
+import { ja } from 'date-fns/locale'
+
+export default function ExportPage() {
+  const { user, profile, loading, isAdmin } = useAuth()
+  const router = useRouter()
+  const [month, setMonth] = useState(getCurrentMonth())
+  const [exporting, setExporting] = useState(false)
+  const [preview, setPreview] = useState<any[]>([])
+  const [fetching, setFetching] = useState(false)
+
+  useEffect(() => {
+    if (!loading) {
+      if (!user) router.replace('/login')
+      else if (!isAdmin) router.replace('/dashboard')
+    }
+  }, [user, loading, isAdmin])
+
+  useEffect(() => { if (isAdmin) fetchPreview() }, [isAdmin, month])
+
+  const fetchPreview = async () => {
+    setFetching(true)
+    const { start, end } = getMonthRange(month)
+
+    const { data: records } = await supabase
+      .from('attendance_records')
+      .select('*, profiles(name, employment_type, base_salary, commute_monthly_fee, commute_type, commute_distance_km, commute_car_rate_type, commute_car_custom_rate)')
+      .gte('date', start)
+      .lte('date', end)
+      .order('date')
+
+    const { data: transports } = await supabase
+      .from('transport_fees')
+      .select('*')
+      .eq('year_month', month)
+
+    // スタッフごとに集計
+    const staffMap: Record<string, any> = {}
+    for (const r of records ?? []) {
+      if (!staffMap[r.user_id]) {
+        staffMap[r.user_id] = {
+          name: r.profiles?.name ?? '—',
+          employment_type: r.profiles?.employment_type,
+          base_salary: r.profiles?.base_salary ?? 0,
+          work_days: 0,
+          absent_days: 0,
+          late_count: 0,
+          late_minutes: 0,
+          early_leave_count: 0,
+          overtime_minutes: 0,
+          deduction_minutes: 0,
+          paid_leave_days: 0,
+          transport_fee: 0,
+        }
+      }
+      const s = staffMap[r.user_id]
+      if (['present','late','early_leave'].includes(r.status)) s.work_days++
+      if (r.status === 'absent') s.absent_days++
+      if ((r.late_minutes ?? 0) > 0) s.late_count++
+      s.late_minutes += r.late_minutes ?? 0
+      if (r.clock_out_reason === 'early_leave') s.early_leave_count++
+      s.overtime_minutes += r.overtime_minutes ?? 0
+      s.deduction_minutes += r.deduction_minutes ?? 0
+      if (r.status === 'paid_leave') s.paid_leave_days++
+    }
+
+    // 交通費を追加
+    for (const t of transports ?? []) {
+      if (staffMap[t.user_id]) staffMap[t.user_id].transport_fee = t.amount
+    }
+
+    setPreview(Object.entries(staffMap).map(([id, data]) => ({ id, ...data })))
+    setFetching(false)
+  }
+
+  const exportCSV = () => {
+    setExporting(true)
+    const headers = [
+      '氏名', '雇用形態', '基本給',
+      '出勤日数', '欠勤日数', '有給取得日数',
+      '遅刻回数', '遅刻時間',
+      '早退回数',
+      '残業時間', '控除時間',
+      '交通費',
+    ]
+
+    const rows = preview.map(s => [
+      s.name,
+      s.employment_type === 'full_time' ? '正社員' : 'パート',
+      s.base_salary,
+      s.work_days,
+      s.absent_days,
+      s.paid_leave_days,
+      s.late_count,
+      formatMinutes(s.late_minutes),
+      s.early_leave_count,
+      formatMinutes(s.overtime_minutes),
+      formatMinutes(s.deduction_minutes),
+      s.transport_fee,
+    ])
+
+    const csv = [
+      `# ${format(parseISO(month + '-01'), 'yyyy年M月', { locale: ja })} 勤怠データ`,
+      `# 出力日: ${format(new Date(), 'yyyy/MM/dd HH:mm')}`,
+      '',
+      headers.join(','),
+      ...rows.map(r => r.map(v => `"${v}"`).join(',')),
+    ].join('\n')
+
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `勤怠データ_${month}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+    setExporting(false)
+  }
+
+  if (loading || !profile) return (
+    <div className="min-h-screen flex items-center justify-center">
+      <div className="text-4xl animate-pulse">🏥</div>
+    </div>
+  )
+
+  return (
+    <Layout>
+      <div className="max-w-4xl mx-auto space-y-5">
+        <div>
+          <h1 className="text-xl font-semibold text-gray-900">📥 月次データ出力</h1>
+          <p className="text-xs text-gray-400 mt-0.5">月次の勤怠・給与データをCSVで出力します</p>
+        </div>
+
+        {/* 月選択・出力 */}
+        <div className="card flex items-center gap-4 flex-wrap">
+          <div>
+            <label className="label">対象月</label>
+            <input
+              type="month"
+              className="input w-auto"
+              value={month}
+              onChange={e => setMonth(e.target.value)}
+            />
+          </div>
+          <button
+            onClick={exportCSV}
+            disabled={exporting || preview.length === 0}
+            className="btn-primary text-sm mt-4"
+          >
+            📥 CSVダウンロード
+          </button>
+        </div>
+
+        {/* プレビュー */}
+        <div className="card p-0 overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-gray-700">
+              プレビュー（{format(parseISO(month + '-01'), 'yyyy年M月', { locale: ja })}）
+            </h2>
+            <span className="text-xs text-gray-400">{preview.length}名</span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm min-w-max">
+              <thead className="bg-gray-50 border-b border-gray-100">
+                <tr>
+                  <th className="table-th">氏名</th>
+                  <th className="table-th">雇用</th>
+                  <th className="table-th">出勤</th>
+                  <th className="table-th">欠勤</th>
+                  <th className="table-th">有給</th>
+                  <th className="table-th">遅刻</th>
+                  <th className="table-th">残業</th>
+                  <th className="table-th">控除</th>
+                  <th className="table-th">交通費</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-50">
+                {fetching ? (
+                  <tr><td colSpan={9} className="text-center py-8 text-gray-400">読込中...</td></tr>
+                ) : preview.length === 0 ? (
+                  <tr><td colSpan={9} className="text-center py-8 text-gray-400">データがありません</td></tr>
+                ) : preview.map(s => (
+                  <tr key={s.id} className="hover:bg-gray-50">
+                    <td className="table-td font-medium">{s.name}</td>
+                    <td className="table-td text-xs text-gray-500">
+                      {s.employment_type === 'full_time' ? '正社員' : 'パート'}
+                    </td>
+                    <td className="table-td">{s.work_days}日</td>
+                    <td className="table-td">
+                      <span className={s.absent_days > 0 ? 'text-red-500 font-medium' : 'text-gray-400'}>
+                        {s.absent_days}日
+                      </span>
+                    </td>
+                    <td className="table-td">{s.paid_leave_days}日</td>
+                    <td className="table-td">
+                      <span className={s.late_count > 0 ? 'text-amber-600 font-medium' : 'text-gray-400'}>
+                        {s.late_count}回
+                      </span>
+                    </td>
+                    <td className="table-td text-amber-600">
+                      {s.overtime_minutes > 0 ? formatMinutes(s.overtime_minutes) : '—'}
+                    </td>
+                    <td className="table-td text-red-500">
+                      {s.deduction_minutes > 0 ? formatMinutes(s.deduction_minutes) : '—'}
+                    </td>
+                    <td className="table-td text-clinic-700 font-medium">
+                      {s.transport_fee > 0 ? `¥${s.transport_fee.toLocaleString()}` : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </Layout>
+  )
+}
