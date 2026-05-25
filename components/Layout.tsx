@@ -146,7 +146,7 @@ export default function Layout({ children }: { children: ReactNode }) {
   return (
     <div className="flex h-screen bg-gray-50">
       {/* Desktop sidebar */}
-      <aside className="hidden md:flex w-56 flex-shrink-0 bg-white border-r border-gray-100 flex-col">
+<aside className="hidden md:flex w-56 flex-shrink-0 bg-white border-r border-gray-100 flex-col h-screen overflow-hidden">
         <SidebarContent onClose={() => {}} />
       </aside>
 
