@@ -111,7 +111,7 @@ export default function Layout({ children }: { children: ReactNode }) {
       </div>
 
       {/* Nav */}
-      <nav className="flex-1 px-3 py-2 space-y-0.5 overflow-y-auto">
+      <nav className="flex-1 px-3 py-2 space-y-0.5 overflow-y-auto" style={{overflowY: 'scroll'}}>
         {renderNav(onClose)}
       </nav>
 
