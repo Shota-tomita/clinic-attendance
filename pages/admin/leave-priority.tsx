@@ -28,11 +28,12 @@ export default function LeavePriorityPage() {
   const [dragging, setDragging] = useState<number | null>(null)
 
   useEffect(() => {
-    if (!loading && !user) router.replace("/login");
-      // handled above
-      else if (!isAdmin) router.replace('/dashboard')
-    }
-  }, [user, loading, isAdmin])
+    if (!loading && !user) router.replace('/login')
+  }, [user, loading])
+
+  useEffect(() => {
+    if (!loading && profile && !isAdmin) router.replace('/dashboard')
+  }, [loading, profile, isAdmin])
 
   useEffect(() => {
     if (isAdmin) fetchGroups()

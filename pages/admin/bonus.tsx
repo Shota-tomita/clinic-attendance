@@ -39,11 +39,12 @@ export default function BonusPage() {
   const [absentRate, setAbsentRate] = useState(2) // %
 
   useEffect(() => {
-    if (!loading && !user) router.replace("/login");
-      // handled above
-      else if (!isAdmin) router.replace('/dashboard')
-    }
-  }, [user, loading, isAdmin])
+    if (!loading && !user) router.replace('/login')
+  }, [user, loading])
+
+  useEffect(() => {
+    if (!loading && profile && !isAdmin) router.replace('/dashboard')
+  }, [loading, profile, isAdmin])
 
   useEffect(() => { if (isAdmin) fetchData() }, [isAdmin, period])
 

@@ -30,11 +30,12 @@ export default function LeaveAccrualPage() {
   const [message, setMessage] = useState('')
 
   useEffect(() => {
-    if (!loading && !user) router.replace("/login");
-      // handled above
-      else if (!isAdmin) router.replace('/dashboard')
-    }
-  }, [user, loading, isAdmin])
+    if (!loading && !user) router.replace('/login')
+  }, [user, loading])
+
+  useEffect(() => {
+    if (!loading && profile && !isAdmin) router.replace('/dashboard')
+  }, [loading, profile, isAdmin])
 
   useEffect(() => { if (isAdmin) fetchStaff() }, [isAdmin])
   useEffect(() => { if (selectedId) fetchHistory() }, [selectedId])
