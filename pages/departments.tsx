@@ -15,13 +15,16 @@ export default function DepartmentsPage() {
   const [error, setError] = useState('')
 
   useEffect(() => {
-    if (!loading) {
-      if (!user) router.replace('/login')
-      else if (!isAdmin) router.replace('/dashboard')
-    }
-  }, [user, loading, isAdmin])
+    if (!loading && !user) router.replace('/login')
+  }, [user, loading])
 
-  useEffect(() => { fetchDepts() }, [])
+  useEffect(() => {
+    if (!loading && profile && !isAdmin) router.replace('/dashboard')
+  }, [loading, profile, isAdmin])
+
+  useEffect(() => {
+    if (profile) fetchDepts()
+  }, [profile])
 
   const fetchDepts = async () => {
     const { data } = await supabase.from('departments').select('*').order('name')
@@ -57,12 +60,16 @@ export default function DepartmentsPage() {
   }
 
   const handleDelete = async (id: string) => {
-    if (!confirm('この部署を削除しますか？\n所属スタッフの部署は「未設定」になります。')) return
+    if (!confirm('この部署を削除しますか？')) return
     await supabase.from('departments').delete().eq('id', id)
     fetchDepts()
   }
 
-  if (loading || !profile) return <div className="min-h-screen flex items-center justify-center"><div className="text-4xl animate-pulse">🏥</div></div>
+  if (loading || !profile) return (
+    <div className="min-h-screen flex items-center justify-center">
+      <div className="text-4xl animate-pulse">🏥</div>
+    </div>
+  )
 
   return (
     <Layout>

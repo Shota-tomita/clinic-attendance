@@ -38,16 +38,19 @@ export default function StaffPage() {
   const [success, setSuccess] = useState('')
 
   useEffect(() => {
-    if (!loading) {
-      if (!user) router.replace('/login')
-      else if (!isAdmin) router.replace('/dashboard')
-    }
-  }, [user, loading, isAdmin])
+    if (!loading && !user) router.replace('/login')
+  }, [user, loading])
 
   useEffect(() => {
-    fetchStaff()
-    fetchDepartments()
-  }, [])
+    if (!loading && profile && !isAdmin) router.replace('/dashboard')
+  }, [loading, profile, isAdmin])
+
+  useEffect(() => {
+    if (profile) {
+      fetchStaff()
+      fetchDepartments()
+    }
+  }, [profile])
 
   const fetchStaff = async () => {
     const { data } = await supabase.from('profiles').select('*, departments(*)').order('name')
@@ -63,7 +66,6 @@ export default function StaffPage() {
     if (!inviteForm.email || !inviteForm.name) { setError('メールと名前は必須です'); return }
     setSaving(true)
     setError('')
-    // Supabase admin invite via Auth
     const { data, error: err } = await supabase.auth.signUp({
       email: inviteForm.email,
       password: Math.random().toString(36).slice(-12) + 'Aa1!',
@@ -77,8 +79,6 @@ export default function StaffPage() {
       }
     })
     if (err) { setError(err.message); setSaving(false); return }
-
-    // Update additional fields
     if (data.user) {
       await supabase.from('profiles').update({
         employment_type: inviteForm.employment_type,
@@ -117,7 +117,11 @@ export default function StaffPage() {
     })
   }
 
-  if (loading || !profile) return <div className="min-h-screen flex items-center justify-center"><div className="text-4xl animate-pulse">🏥</div></div>
+  if (loading || !profile) return (
+    <div className="min-h-screen flex items-center justify-center">
+      <div className="text-4xl animate-pulse">🏥</div>
+    </div>
+  )
 
   return (
     <Layout>
@@ -176,7 +180,6 @@ export default function StaffPage() {
         </div>
       </div>
 
-      {/* Invite modal */}
       {showInvite && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-6 space-y-4">
@@ -233,7 +236,6 @@ export default function StaffPage() {
         </div>
       )}
 
-      {/* Edit modal */}
       {editStaff && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-6 space-y-4">

@@ -111,7 +111,7 @@ export default function Layout({ children }: { children: ReactNode }) {
       </div>
 
       {/* Nav */}
-      <nav className="flex-1 px-3 py-2 space-y-0.5 overflow-y-auto" style={{overflowY: 'scroll'}}>
+      <nav className="flex-1 px-3 py-2 space-y-0.5 overflow-y-auto">
         {renderNav(onClose)}
       </nav>
 
@@ -146,7 +146,7 @@ export default function Layout({ children }: { children: ReactNode }) {
   return (
     <div className="flex h-screen bg-gray-50">
       {/* Desktop sidebar */}
-<aside className="hidden md:flex w-56 flex-shrink-0 bg-white border-r border-gray-100 flex-col h-screen overflow-hidden">
+      <aside className="hidden md:flex w-56 flex-shrink-0 bg-white border-r border-gray-100 flex-col">
         <SidebarContent onClose={() => {}} />
       </aside>
 

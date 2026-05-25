@@ -38,8 +38,8 @@ export default function ShiftPatternsPage() {
   const [error, setError] = useState('')
 
   useEffect(() => {
-    if (!loading) {
-      if (!user) router.replace('/login')
+    if (!loading && !user) router.replace("/login");
+      // handled above
       else if (!isAdmin) router.replace('/dashboard')
     }
   }, [user, loading, isAdmin])
