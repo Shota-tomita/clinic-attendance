@@ -158,3 +158,40 @@ export type MonthlySummary = {
   updated_at: string
   profiles?: Profile
 }
+
+export type Allowance = {
+  id: string
+  user_id: string
+  allowance_type: 'position' | 'skill' | 'qualification' | 'base_up' | 'custom'
+  name: string
+  amount: number
+  include_in_overtime: boolean
+  effective_from: string | null
+  effective_to: string | null
+  note: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type SalaryHistory = {
+  id: string
+  user_id: string
+  effective_date: string
+  base_salary: number
+  previous_salary: number | null
+  change_amount: number | null
+  change_reason: string | null
+  created_by: string | null
+  created_at: string
+}
+
+export type BonusHistory = {
+  id: string
+  user_id: string
+  period: string
+  paid_date: string | null
+  amount: number
+  note: string | null
+  created_by: string | null
+  created_at: string
+}
