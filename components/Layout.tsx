@@ -130,8 +130,12 @@ export default function Layout({ children }: { children: ReactNode }) {
         </div>
       )}
 
-      {/* Sign out */}
-      <div className="px-3 py-3 border-t border-gray-100">
+      {/* Profile & Sign out */}
+      <div className="px-3 py-3 border-t border-gray-100 space-y-0.5">
+        <Link href="/profile" onClick={onClose} className="sidebar-link text-gray-600">
+          <span className="text-base">⚙️</span>
+          <span>パスワード変更</span>
+        </Link>
         <button
           onClick={handleSignOut}
           className="sidebar-link w-full text-left text-red-500 hover:bg-red-50 hover:text-red-600"
