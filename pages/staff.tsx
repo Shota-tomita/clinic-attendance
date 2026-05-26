@@ -35,6 +35,10 @@ export default function StaffPage() {
   const [editForm, setEditForm] = useState({ role: 'staff', department_id: '', employment_type: 'full_time', annual_leave_days: 10 })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [resetStaff, setResetStaff] = useState<Profile | null>(null)
+  const [newPassword, setNewPassword] = useState('')
+  const [resetSaving, setResetSaving] = useState(false)
+  const [resetMessage, setResetMessage] = useState('')
   const [success, setSuccess] = useState('')
 
   useEffect(() => {
@@ -107,6 +111,30 @@ export default function StaffPage() {
     fetchStaff()
   }
 
+  const openResetPassword = (s: Profile) => {
+    setResetStaff(s)
+    setNewPassword('')
+    setResetMessage('')
+  }
+
+  const handleResetPassword = async () => {
+    if (!resetStaff || !newPassword) return
+    if (newPassword.length < 8) { setResetMessage('8文字以上にしてください'); return }
+    setResetSaving(true)
+    const res = await fetch('/api/admin/reset-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: resetStaff.id, newPassword }),
+    })
+    setResetSaving(false)
+    if (res.ok) {
+      setResetMessage('✅ パスワードをリセットしました')
+      setNewPassword('')
+    } else {
+      setResetMessage('エラーが発生しました')
+    }
+  }
+
   const openEdit = (s: Profile) => {
     setEditStaff(s)
     setEditForm({
@@ -171,7 +199,10 @@ export default function StaffPage() {
                     <span className="text-gray-400 text-xs">/{s.annual_leave_days}日</span>
                   </td>
                   <td className="table-td">
-                    <button onClick={() => openEdit(s)} className="btn-secondary text-xs px-2 py-1">編集</button>
+                    <div className="flex gap-1">
+                      <button onClick={() => openEdit(s)} className="btn-secondary text-xs px-2 py-1">編集</button>
+                      <button onClick={() => openResetPassword(s)} className="text-xs text-amber-500 hover:text-amber-700 px-2 py-1 rounded hover:bg-amber-50">PW</button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -280,6 +311,37 @@ export default function StaffPage() {
           </div>
         </div>
       )}
+    {/* Password Reset Modal */}
+      {resetStaff && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-6 space-y-4">
+            <h2 className="font-semibold text-gray-800">パスワードリセット</h2>
+            <p className="text-sm text-gray-500">{resetStaff.name} さんのパスワードを変更します</p>
+            <div>
+              <label className="label">新しいパスワード（8文字以上）</label>
+              <input
+                type="text"
+                className="input font-mono"
+                value={newPassword}
+                onChange={e => setNewPassword(e.target.value)}
+                placeholder="例: Clinic2026!"
+              />
+            </div>
+            {resetMessage && (
+              <div className={"text-sm px-3 py-2 rounded-lg " + (resetMessage.includes('✅') ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-600')}>
+                {resetMessage}
+              </div>
+            )}
+            <div className="flex gap-3">
+              <button onClick={() => setResetStaff(null)} className="btn-secondary flex-1">閉じる</button>
+              <button onClick={handleResetPassword} disabled={resetSaving} className="btn-primary flex-1">
+                {resetSaving ? 'リセット中...' : 'リセット'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </Layout>
   )
 }
