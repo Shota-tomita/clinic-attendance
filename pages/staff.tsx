@@ -200,7 +200,8 @@ export default function StaffPage() {
                   </td>
                   <td className="table-td">
                     <div className="flex gap-1">
-                      <button onClick={() => openEdit(s)} className="btn-secondary text-xs px-2 py-1">編集</button>
+                      <button onClick={() => router.push(`/admin/staff-detail?id=${s.id}`)} className="btn-secondary text-xs px-2 py-1">詳細</button>
+<button onClick={() => openEdit(s)} className="btn-secondary text-xs px-2 py-1">編集</button>
                       <button onClick={() => openResetPassword(s)} className="text-xs text-amber-500 hover:text-amber-700 px-2 py-1 rounded hover:bg-amber-50">PW</button>
                     </div>
                   </td>
