@@ -28,6 +28,8 @@ export default function StaffPage() {
   const router = useRouter()
 
   const [staff, setStaff] = useState<Profile[]>([])
+  const [sortKey, setSortKey] = useState<'department' | 'employment' | 'hire_date' | 'role'>('department')
+const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
   const [departments, setDepartments] = useState<Department[]>([])
   const [showInvite, setShowInvite] = useState(false)
   const [editStaff, setEditStaff] = useState<Profile | null>(null)
