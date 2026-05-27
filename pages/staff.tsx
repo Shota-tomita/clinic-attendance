@@ -29,7 +29,7 @@ export default function StaffPage() {
 
   const [staff, setStaff] = useState<Profile[]>([])
   const [sortKey, setSortKey] = useState<'department' | 'employment' | 'hire_date' | 'role'>('department')
-const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
   const [departments, setDepartments] = useState<Department[]>([])
   const [showInvite, setShowInvite] = useState(false)
   const [editStaff, setEditStaff] = useState<Profile | null>(null)
@@ -67,6 +67,27 @@ const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
     const { data } = await supabase.from('departments').select('*').order('name')
     setDepartments(data ?? [])
   }
+
+  const sortedStaff = [...staff].sort((a, b) => {
+    let valA: any, valB: any
+    if (sortKey === 'department') {
+      valA = (a as any).departments?.name ?? ''
+      valB = (b as any).departments?.name ?? ''
+    } else if (sortKey === 'employment') {
+      valA = a.employment_type
+      valB = b.employment_type
+    } else if (sortKey === 'hire_date') {
+      valA = (a as any).hire_date ?? ''
+      valB = (b as any).hire_date ?? ''
+    } else if (sortKey === 'role') {
+      const order: Record<string, number> = { admin: 0, leader: 1, staff: 2 }
+      valA = order[a.role] ?? 3
+      valB = order[b.role] ?? 3
+    }
+    if (valA < valB) return sortOrder === 'asc' ? -1 : 1
+    if (valA > valB) return sortOrder === 'asc' ? 1 : -1
+    return 0
+  })
 
   const handleInvite = async () => {
     if (!inviteForm.email || !inviteForm.name) { setError('メールと名前は必須です'); return }
@@ -112,26 +133,7 @@ const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
     setEditStaff(null)
     fetchStaff()
   }
-const sortedStaff = [...staff].sort((a, b) => {
-  let valA: any, valB: any
-  if (sortKey === 'department') {
-    valA = (a as any).departments?.name ?? ''
-    valB = (b as any).departments?.name ?? ''
-  } else if (sortKey === 'employment') {
-    valA = a.employment_type
-    valB = b.employment_type
-  } else if (sortKey === 'hire_date') {
-    valA = (a as any).hire_date ?? ''
-    valB = (b as any).hire_date ?? ''
-  } else if (sortKey === 'role') {
-    const order = { admin: 0, leader: 1, staff: 2 }
-    valA = order[a.role] ?? 3
-    valB = order[b.role] ?? 3
-  }
-  if (valA < valB) return sortOrder === 'asc' ? -1 : 1
-  if (valA > valB) return sortOrder === 'asc' ? 1 : -1
-  return 0
-})
+
   const openResetPassword = (s: Profile) => {
     setResetStaff(s)
     setNewPassword('')
@@ -184,6 +186,31 @@ const sortedStaff = [...staff].sort((a, b) => {
           <div className="bg-emerald-50 border border-emerald-100 text-emerald-700 text-sm rounded-lg px-4 py-3">{success}</div>
         )}
 
+        {/* ソートUI */}
+        <div className="card flex flex-wrap gap-2 items-center py-3">
+          <span className="text-xs text-gray-500 font-medium">並び替え：</span>
+          {([
+            ['department', '部署'],
+            ['employment', '雇用形態'],
+            ['hire_date', '入職日'],
+            ['role', 'ロール'],
+          ] as const).map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => {
+                if (sortKey === key) setSortOrder(o => o === 'asc' ? 'desc' : 'asc')
+                else { setSortKey(key); setSortOrder('asc') }
+              }}
+              className={`text-xs px-3 py-1.5 rounded-lg border font-medium transition-all
+                ${sortKey === key
+                  ? 'bg-clinic-600 text-white border-clinic-600'
+                  : 'bg-white text-gray-600 border-gray-200 hover:border-clinic-400'}`}
+            >
+              {label} {sortKey === key ? (sortOrder === 'asc' ? '↑' : '↓') : ''}
+            </button>
+          ))}
+        </div>
+
         <div className="card p-0 overflow-hidden">
           <table className="w-full">
             <thead className="bg-gray-50 border-b border-gray-100">
@@ -197,7 +224,7 @@ const sortedStaff = [...staff].sort((a, b) => {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
-              {staff.map(s => (
+              {sortedStaff.map(s => (
                 <tr key={s.id} className="hover:bg-gray-50">
                   <td className="table-td">
                     <div className="flex items-center gap-2">
@@ -222,7 +249,7 @@ const sortedStaff = [...staff].sort((a, b) => {
                   <td className="table-td">
                     <div className="flex gap-1">
                       <button onClick={() => router.push(`/admin/staff-detail?id=${s.id}`)} className="btn-secondary text-xs px-2 py-1">詳細</button>
-<button onClick={() => openEdit(s)} className="btn-secondary text-xs px-2 py-1">編集</button>
+                      <button onClick={() => openEdit(s)} className="btn-secondary text-xs px-2 py-1">編集</button>
                       <button onClick={() => openResetPassword(s)} className="text-xs text-amber-500 hover:text-amber-700 px-2 py-1 rounded hover:bg-amber-50">PW</button>
                     </div>
                   </td>
@@ -333,7 +360,7 @@ const sortedStaff = [...staff].sort((a, b) => {
           </div>
         </div>
       )}
-    {/* Password Reset Modal */}
+
       {resetStaff && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-6 space-y-4">
@@ -363,7 +390,6 @@ const sortedStaff = [...staff].sort((a, b) => {
           </div>
         </div>
       )}
-
     </Layout>
   )
 }
