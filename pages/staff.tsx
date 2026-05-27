@@ -112,7 +112,26 @@ const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
     setEditStaff(null)
     fetchStaff()
   }
-
+const sortedStaff = [...staff].sort((a, b) => {
+  let valA: any, valB: any
+  if (sortKey === 'department') {
+    valA = (a as any).departments?.name ?? ''
+    valB = (b as any).departments?.name ?? ''
+  } else if (sortKey === 'employment') {
+    valA = a.employment_type
+    valB = b.employment_type
+  } else if (sortKey === 'hire_date') {
+    valA = (a as any).hire_date ?? ''
+    valB = (b as any).hire_date ?? ''
+  } else if (sortKey === 'role') {
+    const order = { admin: 0, leader: 1, staff: 2 }
+    valA = order[a.role] ?? 3
+    valB = order[b.role] ?? 3
+  }
+  if (valA < valB) return sortOrder === 'asc' ? -1 : 1
+  if (valA > valB) return sortOrder === 'asc' ? 1 : -1
+  return 0
+})
   const openResetPassword = (s: Profile) => {
     setResetStaff(s)
     setNewPassword('')
