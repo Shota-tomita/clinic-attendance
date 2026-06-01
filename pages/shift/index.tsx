@@ -10,6 +10,24 @@ import {
 } from 'date-fns'
 import { ja } from 'date-fns/locale'
 
+// 看護師・ORT の曜日自動パターンマップ
+const AUTO_PATTERN_MAP: Record<string, Record<number, string>> = {
+  '00000000-0000-0000-0000-000000000001': { // 看護師
+    1: 'a1000001-0000-0000-0000-000000000001', // 月
+    2: 'a1000001-0000-0000-0000-000000000001', // 火
+    3: 'a1000001-0000-0000-0000-000000000002', // 水
+    5: 'a1000001-0000-0000-0000-000000000001', // 金
+    6: 'a1000001-0000-0000-0000-000000000003', // 土
+  },
+  '63aaa75e-18dc-41cd-81e5-34097b0131f5': { // ORT
+    1: 'a2000001-0000-0000-0000-000000000001', // 月
+    2: 'a2000001-0000-0000-0000-000000000001', // 火
+    3: 'a2000001-0000-0000-0000-000000000002', // 水
+    5: 'a2000001-0000-0000-0000-000000000001', // 金
+    6: 'a2000001-0000-0000-0000-000000000003', // 土
+  },
+}
+
 export default function ShiftPage() {
   const { user, profile, loading, isAdmin, isLeader } = useAuth()
   const router = useRouter()
@@ -20,8 +38,7 @@ export default function ShiftPage() {
   const [assignments, setAssignments] = useState<ShiftAssignment[]>([])
   const [fetching, setFetching] = useState(false)
 
-  // Modal state
-  const [modal, setModal] = useState<{ userId: string; date: string; existing?: ShiftAssignment } | null>(null)
+  const [modal, setModal] = useState<{ userId: string; date: string; dow: number; existing?: ShiftAssignment; deptId?: string } | null>(null)
   const [modalPatternId, setModalPatternId] = useState('')
   const [modalNote, setModalNote] = useState('')
   const [modalSaving, setModalSaving] = useState(false)
@@ -44,7 +61,7 @@ export default function ShiftPage() {
 
   const fetchStaff = async () => {
     let q = supabase.from('profiles').select('*, departments(*)').order('name')
-    if (isLeader && profile?.department_id) {
+    if (isLeader && !isAdmin && profile?.department_id) {
       q = q.eq('department_id', profile.department_id)
     }
     const { data } = await q
@@ -52,7 +69,11 @@ export default function ShiftPage() {
   }
 
   const fetchPatterns = async () => {
-    const { data } = await supabase.from('shift_patterns').select('*').eq('is_active', true).order('name')
+    const { data } = await supabase
+      .from('shift_patterns')
+      .select('*, shift_pattern_blocks(*)')
+      .eq('is_active', true)
+      .order('name')
     setPatterns(data ?? [])
   }
 
@@ -63,7 +84,7 @@ export default function ShiftPage() {
     const ids = staffList.map(s => s.id)
     const { data } = await supabase
       .from('shift_assignments')
-      .select('*, shift_patterns(*)')
+      .select('*, shift_patterns(*, shift_pattern_blocks(*))')
       .in('user_id', ids)
       .gte('date', start)
       .lte('date', end)
@@ -81,15 +102,26 @@ export default function ShiftPage() {
 
   const openModal = (userId: string, date: string) => {
     if (!canManage) return
-    // Check: leader can only edit their dept
-    if (isLeader && !isAdmin) {
-      const staff = staffList.find(s => s.id === userId)
-      if (!staff || staff.department_id !== profile?.department_id) return
-    }
+    const dow = getDay(parseISO(date))
     const existing = getAssignment(userId, date)
-    setModal({ userId, date, existing })
-    setModalPatternId(existing?.shift_pattern_id ?? '')
+    const staff = staffList.find(s => s.id === userId)
+    const deptId = staff?.department_id ?? undefined
+
+    // 曜日自動パターンを取得
+    let defaultPatternId = ''
+    if (deptId && AUTO_PATTERN_MAP[deptId]) {
+      defaultPatternId = AUTO_PATTERN_MAP[deptId][dow] ?? ''
+    }
+
+    setModal({ userId, date, dow, existing, deptId })
+    setModalPatternId(existing?.shift_pattern_id ?? defaultPatternId)
     setModalNote(existing?.note ?? '')
+  }
+
+  // 対象スタッフの部署に対応するパターンのみ返す
+  const getFilteredPatterns = (deptId?: string) => {
+    if (!deptId) return patterns
+    return patterns.filter(p => (p as any).department_id === deptId || !(p as any).department_id)
   }
 
   const handleSave = async () => {
@@ -119,12 +151,40 @@ export default function ShiftPage() {
     fetchAssignments()
   }
 
+  // 月一括自動設定（看護師・ORT）
+  const handleAutoFill = async (userId: string, deptId: string) => {
+    if (!AUTO_PATTERN_MAP[deptId]) return
+    const patternMap = AUTO_PATTERN_MAP[deptId]
+    const { start, end } = getMonthRange(month)
+    const allDays = eachDayOfInterval({ start: parseISO(start), end: parseISO(end) })
+
+    const rows = allDays
+      .filter(d => patternMap[getDay(d)])
+      .map(d => ({
+        user_id: userId,
+        date: format(d, 'yyyy-MM-dd'),
+        shift_pattern_id: patternMap[getDay(d)],
+        assigned_by: user?.id,
+      }))
+
+    for (const row of rows) {
+      await supabase.from('shift_assignments').upsert(row, { onConflict: 'user_id,date' })
+    }
+    fetchAssignments()
+  }
+
   const prevMonth = () => setMonth(format(subMonths(parseISO(month + '-01'), 1), 'yyyy-MM'))
   const nextMonth = () => setMonth(format(addMonths(parseISO(month + '-01'), 1), 'yyyy-MM'))
 
   const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土']
 
-  if (loading || !profile) return <div className="min-h-screen flex items-center justify-center"><div className="text-4xl animate-pulse">🏥</div></div>
+  if (loading || !profile) return (
+    <div className="min-h-screen flex items-center justify-center">
+      <div className="text-4xl animate-pulse">🏥</div>
+    </div>
+  )
+
+  const filteredPatterns = modal ? getFilteredPatterns(modal.deptId) : patterns
 
   return (
     <Layout>
@@ -137,12 +197,6 @@ export default function ShiftPage() {
             </button>
           )}
         </div>
-
-        {isLeader && !isAdmin && (
-          <div className="text-xs text-blue-600 bg-blue-50 rounded-lg px-3 py-2">
-            💡 {profile.departments?.name ?? '所属部署'} のスタッフのシフトを入力できます
-          </div>
-        )}
 
         {/* Month nav */}
         <div className="card flex items-center gap-3 py-3">
@@ -158,7 +212,7 @@ export default function ShiftPage() {
           {patterns.map(p => (
             <div key={p.id} className="flex items-center gap-1.5">
               <div className="w-3 h-3 rounded" style={{ backgroundColor: p.color }} />
-              <span className="text-xs text-gray-500">{p.name} ({p.start_time.slice(0,5)}〜{p.end_time.slice(0,5)})</span>
+              <span className="text-xs text-gray-500">{p.name}</span>
             </div>
           ))}
         </div>
@@ -169,7 +223,7 @@ export default function ShiftPage() {
             <table className="w-full text-xs min-w-max">
               <thead className="bg-gray-50 border-b border-gray-100">
                 <tr>
-                  <th className="sticky left-0 z-10 bg-gray-50 px-3 py-2 text-left font-medium text-gray-600 min-w-[100px]">
+                  <th className="sticky left-0 z-10 bg-gray-50 px-3 py-2 text-left font-medium text-gray-600 min-w-[120px]">
                     スタッフ
                   </th>
                   {days.map(d => {
@@ -192,48 +246,63 @@ export default function ShiftPage() {
                   <tr><td colSpan={days.length + 1} className="text-center py-8 text-gray-400">読込中...</td></tr>
                 ) : staffList.length === 0 ? (
                   <tr><td colSpan={days.length + 1} className="text-center py-8 text-gray-400">スタッフがいません</td></tr>
-                ) : staffList.map(staff => (
-                  <tr key={staff.id} className="hover:bg-gray-50/50">
-                    <td className="sticky left-0 z-10 bg-white px-3 py-2 font-medium text-gray-700 border-r border-gray-100">
-                      <div className="flex items-center gap-1.5">
-                        <div className="w-6 h-6 rounded-full bg-clinic-100 text-clinic-700 flex items-center justify-center text-[10px] font-bold flex-shrink-0">
-                          {staff.name[0]}
+                ) : staffList.map(staff => {
+                  const deptId = staff.department_id ?? ''
+                  const hasAutoPattern = !!AUTO_PATTERN_MAP[deptId]
+                  return (
+                    <tr key={staff.id} className="hover:bg-gray-50/50">
+                      <td className="sticky left-0 z-10 bg-white px-3 py-2 font-medium text-gray-700 border-r border-gray-100">
+                        <div className="flex items-center gap-1.5">
+                          <div className="w-6 h-6 rounded-full bg-clinic-100 text-clinic-700 flex items-center justify-center text-[10px] font-bold flex-shrink-0">
+                            {staff.name[0]}
+                          </div>
+                          <div>
+                            <span className="truncate max-w-[70px] block">{staff.name}</span>
+                            {canManage && hasAutoPattern && (
+                              <button
+                                onClick={() => handleAutoFill(staff.id, deptId)}
+                                className="text-[9px] text-clinic-500 hover:text-clinic-700 underline"
+                              >
+                                曜日自動設定
+                              </button>
+                            )}
+                          </div>
                         </div>
-                        <span className="truncate max-w-[70px]">{staff.name}</span>
-                      </div>
-                    </td>
-                    {days.map(d => {
-                      const dateStr = format(d, 'yyyy-MM-dd')
-                      const a = getAssignment(staff.id, dateStr)
-                      const pat = a?.shift_patterns
-                      const dow = getDay(d)
-                      const isWeekend = dow === 0 || dow === 6
-                      return (
-                        <td
-                          key={dateStr}
-                          onClick={() => openModal(staff.id, dateStr)}
-                          className={`px-0.5 py-1 text-center cursor-pointer transition-colors
-                            ${canManage ? 'hover:bg-clinic-50' : ''}
-                            ${isWeekend ? 'bg-gray-50/70' : ''}`}
-                        >
-                          {pat ? (
-                            <div
-                              className="shift-cell text-white mx-auto"
-                              style={{ backgroundColor: pat.color }}
-                              title={`${pat.name} ${pat.start_time.slice(0,5)}〜${pat.end_time.slice(0,5)}`}
-                            >
-                              {pat.name.slice(0, 2)}
-                            </div>
-                          ) : a ? (
-                            <div className="shift-cell bg-gray-200 text-gray-600 mx-auto">手</div>
-                          ) : (
-                            canManage && <div className="text-gray-200 text-center">＋</div>
-                          )}
-                        </td>
-                      )
-                    })}
-                  </tr>
-                ))}
+                      </td>
+                      {days.map(d => {
+                        const dateStr = format(d, 'yyyy-MM-dd')
+                        const a = getAssignment(staff.id, dateStr)
+                        const pat = a?.shift_patterns
+                        const dow = getDay(d)
+                        const isWeekend = dow === 0 || dow === 6
+                        const isClosed = dow === 0 // 日曜のみ休診
+                        return (
+                          <td
+                            key={dateStr}
+                            onClick={() => openModal(staff.id, dateStr)}
+                            className={`px-0.5 py-1 text-center cursor-pointer transition-colors
+                              ${canManage ? 'hover:bg-clinic-50' : ''}
+                              ${isClosed ? 'bg-gray-100/70' : isWeekend ? 'bg-gray-50/70' : ''}`}
+                          >
+                            {pat ? (
+                              <div
+                                className="shift-cell text-white mx-auto"
+                                style={{ backgroundColor: pat.color }}
+                                title={pat.name}
+                              >
+                                {pat.name.slice(pat.name.indexOf('_') + 1, pat.name.indexOf('_') + 3)}
+                              </div>
+                            ) : a ? (
+                              <div className="shift-cell bg-gray-200 text-gray-600 mx-auto">手</div>
+                            ) : (
+                              canManage && !isClosed && <div className="text-gray-200 text-center">＋</div>
+                            )}
+                          </td>
+                        )
+                      })}
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
@@ -244,11 +313,9 @@ export default function ShiftPage() {
       {modal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-6 space-y-4">
-            <h2 className="font-semibold text-gray-800">
-              シフト設定
-            </h2>
+            <h2 className="font-semibold text-gray-800">シフト設定</h2>
             <div className="text-sm text-gray-500">
-              {staffList.find(s => s.id === modal.userId)?.name} / {modal.date}
+              {staffList.find(s => s.id === modal.userId)?.name} / {modal.date}（{WEEKDAYS[modal.dow]}）
             </div>
 
             <div>
@@ -259,36 +326,29 @@ export default function ShiftPage() {
                 onChange={e => setModalPatternId(e.target.value)}
               >
                 <option value="">— 選択してください —</option>
-                {patterns.map(p => (
+                {getFilteredPatterns(modal.deptId).map(p => (
                   <option key={p.id} value={p.id}>
-                    {p.name}（{p.start_time.slice(0,5)}〜{p.end_time.slice(0,5)}）
+                    {p.name}（{(p.shift_pattern_blocks ?? []).sort((a,b) => a.sort_order - b.sort_order).map(b => `${b.start_time.slice(0,5)}〜${b.end_time.slice(0,5)}`).join(' / ')}）
                   </option>
                 ))}
               </select>
             </div>
 
-            {modalPatternId && (
-              <div className="bg-clinic-50 rounded-lg p-2 flex items-center gap-2">
-                {(() => {
-                  const p = patterns.find(pt => pt.id === modalPatternId)
-                  return p ? (
-                    <>
-                      <div className="shift-cell text-white" style={{ backgroundColor: p.color }}>{p.name}</div>
-                      <span className="text-sm text-gray-600">{p.start_time.slice(0,5)} 〜 {p.end_time.slice(0,5)}</span>
-                    </>
-                  ) : null
-                })()}
-              </div>
-            )}
+            {modalPatternId && (() => {
+              const p = patterns.find(pt => pt.id === modalPatternId)
+              return p ? (
+                <div className="bg-clinic-50 rounded-lg p-2 flex items-center gap-2">
+                  <div className="shift-cell text-white text-xs px-2 py-1" style={{ backgroundColor: p.color }}>{p.name}</div>
+                  <span className="text-sm text-gray-600">
+                    {(p.shift_pattern_blocks ?? []).sort((a,b) => a.sort_order - b.sort_order).map(b => `${b.start_time.slice(0,5)}〜${b.end_time.slice(0,5)}`).join(' / ')}
+                  </span>
+                </div>
+              ) : null
+            })()}
 
             <div>
               <label className="label">メモ（任意）</label>
-              <input
-                className="input"
-                value={modalNote}
-                onChange={e => setModalNote(e.target.value)}
-                placeholder="例: 早退予定あり"
-              />
+              <input className="input" value={modalNote} onChange={e => setModalNote(e.target.value)} placeholder="例: 早退予定あり" />
             </div>
 
             <div className="flex gap-2 pt-1">
