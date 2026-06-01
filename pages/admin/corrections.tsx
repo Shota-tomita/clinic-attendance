@@ -4,7 +4,6 @@ import Layout from '@/components/Layout'
 import { useAuth } from '@/lib/auth'
 import { supabase } from '@/lib/supabase'
 import { format } from 'date-fns'
-import { ja } from 'date-fns/locale'
 
 const FIELD_LABELS: Record<string, string> = {
   am_clock_in: '午前出勤',
@@ -30,6 +29,7 @@ export default function CorrectionsAdminPage() {
   const router = useRouter()
 
   const [corrections, setCorrections] = useState<any[]>([])
+  const [staffNames, setStaffNames] = useState<Record<string, string>>({})
   const [reviewingId, setReviewingId] = useState<string | null>(null)
   const [adminNote, setAdminNote] = useState('')
   const [saving, setSaving] = useState(false)
@@ -41,15 +41,27 @@ export default function CorrectionsAdminPage() {
   }, [user, loading, profile, isAdmin])
 
   useEffect(() => {
-    if (isAdmin) fetchCorrections()
+    if (isAdmin) {
+      fetchCorrections()
+      fetchStaffNames()
+    }
   }, [isAdmin])
 
   const fetchCorrections = async () => {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('attendance_corrections')
-      .select('*, profiles(name, department_id)')
+      .select('*')
       .order('created_at', { ascending: false })
     setCorrections(data ?? [])
+  }
+
+  const fetchStaffNames = async () => {
+    const { data } = await supabase
+      .from('profiles')
+      .select('id, name')
+    const map: Record<string, string> = {}
+    for (const p of data ?? []) map[p.id] = p.name
+    setStaffNames(map)
   }
 
   const formatTime = (iso: string | null) => {
@@ -60,7 +72,6 @@ export default function CorrectionsAdminPage() {
   const handleApprove = async (correction: any) => {
     setSaving(true)
 
-    // 打刻データを修正
     const { data: record } = await supabase
       .from('attendance_records')
       .select('id')
@@ -69,12 +80,10 @@ export default function CorrectionsAdminPage() {
       .single()
 
     if (record) {
-      // 既存レコードを更新
       await supabase.from('attendance_records')
         .update({ [correction.field]: correction.new_value })
         .eq('id', record.id)
     } else {
-      // レコードがない場合は新規作成
       const insertData: any = {
         user_id: correction.user_id,
         date: correction.date,
@@ -83,13 +92,11 @@ export default function CorrectionsAdminPage() {
         early_finish_status: 'not_required',
         [correction.field]: correction.new_value,
       }
-      // clock_in/clock_outも更新（後方互換）
       if (correction.field === 'am_clock_in') insertData.clock_in = correction.new_value
       if (correction.field === 'pm_clock_out') insertData.clock_out = correction.new_value
       await supabase.from('attendance_records').insert(insertData)
     }
 
-    // 申請を承認
     await supabase.from('attendance_corrections').update({
       status: 'approved',
       reviewed_by: user!.id,
@@ -160,7 +167,7 @@ export default function CorrectionsAdminPage() {
                   <div className="flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-sm font-medium text-gray-800">
-                        {c.profiles?.name}
+                        {staffNames[c.user_id] ?? '—'}
                       </span>
                       <span className="text-xs text-gray-400">
                         {c.date} / {FIELD_LABELS[c.field]}
@@ -193,7 +200,6 @@ export default function CorrectionsAdminPage() {
         </div>
       </div>
 
-      {/* 審査モーダル */}
       {reviewingId && (() => {
         const c = corrections.find(c => c.id === reviewingId)!
         return (
@@ -201,7 +207,7 @@ export default function CorrectionsAdminPage() {
             <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-6 space-y-4">
               <h2 className="font-semibold text-gray-800">打刻修正申請の審査</h2>
               <div className="bg-gray-50 rounded-xl p-3 text-sm space-y-1.5">
-                <div><span className="text-gray-500">申請者:</span> {c.profiles?.name}</div>
+                <div><span className="text-gray-500">申請者:</span> {staffNames[c.user_id] ?? '—'}</div>
                 <div><span className="text-gray-500">日付:</span> {c.date}</div>
                 <div><span className="text-gray-500">項目:</span> {FIELD_LABELS[c.field]}</div>
                 <div>
