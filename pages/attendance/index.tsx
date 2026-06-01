@@ -63,8 +63,8 @@ export default function AttendancePage() {
     }
   }
 
-  const hasAmShift = shiftBlocks.some(b => b.sort_order === 0)
-  const hasPmShift = shiftBlocks.some(b => b.sort_order === 1)
+const hasAmShift = shiftBlocks.length === 0 || shiftBlocks.some(b => b.sort_order === 0)
+const hasPmShift = shiftBlocks.length === 0 || shiftBlocks.some(b => b.sort_order === 1)
 
   const getNextAction = (): { label: string; type: string | null; color: string } => {
     if (!record) {
