@@ -11,29 +11,81 @@ import {
 import { format, addMonths, subMonths, parseISO, differenceInMinutes } from 'date-fns'
 import { ja } from 'date-fns/locale'
 
-// 実働時間計算（中抜き対応）
-function calcActualMin(r: any): number {
-  const amIn = r.am_clock_in ? parseISO(r.am_clock_in) : null
-  const amOut = r.am_clock_out ? parseISO(r.am_clock_out) : null
-  const pmIn = r.pm_clock_in ? parseISO(r.pm_clock_in) : null
-  const pmOut = r.pm_clock_out ? parseISO(r.pm_clock_out) : null
+// 実働時間計算（シフト開始より早い分を除外・中抜き対応）
+function calcActualMin(r: any, shiftBlocks: any[]): number {
+  const sorted = [...shiftBlocks].sort((a: any, b: any) => a.sort_order - b.sort_order)
+  const amBlock = sorted.find((b: any) => b.sort_order === 0)
+  const pmBlock = sorted.find((b: any) => b.sort_order === 1)
 
   let total = 0
+
   // 午前ブロック
-  if (amIn && amOut) total += Math.max(differenceInMinutes(amOut, amIn), 0)
-  else if (amIn && !amOut && pmOut) {
-    // 午前退勤なしでpm_clock_outがある（1打刻系）
-    // 後でpm_inがあればそちらで計算
+  const rawAmIn = r.am_clock_in ? parseISO(r.am_clock_in) : null
+  const amOut = r.am_clock_out ? parseISO(r.am_clock_out) : null
+
+  let effectiveAmIn = rawAmIn
+  if (rawAmIn && amBlock) {
+    // シフト開始より早い場合はシフト開始時間を使用
+    const [sh, sm] = amBlock.start_time.split(':').map(Number)
+    const shiftAmStart = new Date(`${r.date}T${String(sh).padStart(2,'0')}:${String(sm).padStart(2,'0')}:00+09:00`)
+    if (rawAmIn < shiftAmStart) effectiveAmIn = shiftAmStart
   }
+
+  if (effectiveAmIn && amOut) {
+    total += Math.max(differenceInMinutes(amOut, effectiveAmIn), 0)
+  }
+
   // 午後ブロック
-  if (pmIn && pmOut) total += Math.max(differenceInMinutes(pmOut, pmIn), 0)
-  // 午後のみシフト（am_inからpm_outまで）
-  if (!pmIn && amIn && pmOut) total = Math.max(differenceInMinutes(pmOut, amIn), 0)
-  // 旧形式（clock_in/clock_out）フォールバック
+  const rawPmIn = r.pm_clock_in ? parseISO(r.pm_clock_in) : null
+  const pmOut = r.pm_clock_out ? parseISO(r.pm_clock_out) : null
+
+  let effectivePmIn = rawPmIn
+  if (rawPmIn && pmBlock) {
+    const [sh, sm] = pmBlock.start_time.split(':').map(Number)
+    const shiftPmStart = new Date(`${r.date}T${String(sh).padStart(2,'0')}:${String(sm).padStart(2,'0')}:00+09:00`)
+    if (rawPmIn < shiftPmStart) effectivePmIn = shiftPmStart
+  }
+
+  if (effectivePmIn && pmOut) {
+    total += Math.max(differenceInMinutes(pmOut, effectivePmIn), 0)
+  }
+
+  // 午後のみシフト（ope等: am_inからpm_outまで）
+  if (!rawPmIn && effectiveAmIn && pmOut) {
+    total = Math.max(differenceInMinutes(pmOut, effectiveAmIn), 0)
+  }
+
+  // 旧形式フォールバック
   if (total === 0 && r.clock_in && r.clock_out) {
     total = Math.max(differenceInMinutes(parseISO(r.clock_out), parseISO(r.clock_in)), 0)
   }
+
   return total
+}
+
+// 半日有給の所定時間計算
+function calcScheduledMinWithHalfLeave(r: any, shiftBlocks: any[]): number {
+  const base = calcScheduledMin(shiftBlocks)
+  // 半日有給の場合はその半分を所定時間として計算
+  if (r.am_leave && shiftBlocks.some((b: any) => b.sort_order === 0)) {
+    const amBlock = shiftBlocks.find((b: any) => b.sort_order === 0)
+    if (amBlock) {
+      const [sh, sm] = amBlock.start_time.split(':').map(Number)
+      const [eh, em] = amBlock.end_time.split(':').map(Number)
+      const amMin = (eh * 60 + em) - (sh * 60 + sm)
+      return base - amMin
+    }
+  }
+  if (r.pm_leave && shiftBlocks.some((b: any) => b.sort_order === 1)) {
+    const pmBlock = shiftBlocks.find((b: any) => b.sort_order === 1)
+    if (pmBlock) {
+      const [sh, sm] = pmBlock.start_time.split(':').map(Number)
+      const [eh, em] = pmBlock.end_time.split(':').map(Number)
+      const pmMin = (eh * 60 + em) - (sh * 60 + sm)
+      return base - pmMin
+    }
+  }
+  return base
 }
 
 // 遅刻分数計算（午前・午後それぞれの開始時間と比較）
@@ -175,8 +227,8 @@ export default function AttendanceHistoryPage() {
   // フロントエンドで計算
   const computedRecords = records.map(r => {
     const blocks = shiftMap[r.date] ?? []
-    const scheduledMin = calcScheduledMin(blocks)
-    const actualMin = calcActualMin(r)
+    const scheduledMin = calcScheduledMinWithHalfLeave(r, blocks)
+    const actualMin = calcActualMin(r, blocks)
     const lateMin = calcLateMin(r, blocks)
     const overtimeMin = scheduledMin > 0 ? Math.max(actualMin - scheduledMin, 0) : 0
     const netLateDeduction = Math.max(lateMin - overtimeMin, 0)
