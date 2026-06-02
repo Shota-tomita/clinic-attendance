@@ -2,20 +2,90 @@ import { useEffect, useState } from 'react'
 import { useRouter } from 'next/router'
 import Layout from '@/components/Layout'
 import { useAuth } from '@/lib/auth'
-import { supabase, AttendanceRecord, Profile } from '@/lib/supabase'
+import { supabase, Profile } from '@/lib/supabase'
 import {
   formatTime, formatMinutes, statusLabel, statusColor,
-  clockOutReasonLabel, earlyFinishStatusLabel, earlyFinishStatusColor,
+  earlyFinishStatusLabel, earlyFinishStatusColor,
   getCurrentMonth, getMonthRange
 } from '@/lib/utils'
-import { format, addMonths, subMonths, parseISO } from 'date-fns'
+import { format, addMonths, subMonths, parseISO, differenceInMinutes } from 'date-fns'
 import { ja } from 'date-fns/locale'
+
+// 実働時間計算（中抜き対応）
+function calcActualMin(r: any): number {
+  const amIn = r.am_clock_in ? parseISO(r.am_clock_in) : null
+  const amOut = r.am_clock_out ? parseISO(r.am_clock_out) : null
+  const pmIn = r.pm_clock_in ? parseISO(r.pm_clock_in) : null
+  const pmOut = r.pm_clock_out ? parseISO(r.pm_clock_out) : null
+
+  let total = 0
+  // 午前ブロック
+  if (amIn && amOut) total += Math.max(differenceInMinutes(amOut, amIn), 0)
+  else if (amIn && !amOut && pmOut) {
+    // 午前退勤なしでpm_clock_outがある（1打刻系）
+    // 後でpm_inがあればそちらで計算
+  }
+  // 午後ブロック
+  if (pmIn && pmOut) total += Math.max(differenceInMinutes(pmOut, pmIn), 0)
+  // 午後のみシフト（am_inからpm_outまで）
+  if (!pmIn && amIn && pmOut) total = Math.max(differenceInMinutes(pmOut, amIn), 0)
+  // 旧形式（clock_in/clock_out）フォールバック
+  if (total === 0 && r.clock_in && r.clock_out) {
+    total = Math.max(differenceInMinutes(parseISO(r.clock_out), parseISO(r.clock_in)), 0)
+  }
+  return total
+}
+
+// 遅刻分数計算（午前・午後それぞれの開始時間と比較）
+function calcLateMin(r: any, shiftBlocks: any[]): number {
+  if (!shiftBlocks || shiftBlocks.length === 0) return 0
+  const sorted = [...shiftBlocks].sort((a: any, b: any) => a.sort_order - b.sort_order)
+  let totalLate = 0
+
+  // 午前ブロック（sort_order=0）との比較
+  const amBlock = sorted.find((b: any) => b.sort_order === 0)
+  if (amBlock && r.am_clock_in) {
+    const [sh, sm] = amBlock.start_time.split(':').map(Number)
+    const scheduledStart = new Date(`${r.date}T${String(sh).padStart(2,'0')}:${String(sm).padStart(2,'0')}:00+09:00`)
+    const late = differenceInMinutes(parseISO(r.am_clock_in), scheduledStart)
+    if (late > 0) totalLate += late
+  } else if (!amBlock && r.clock_in && sorted.length > 0) {
+    // 旧形式フォールバック
+    const firstBlock = sorted[0]
+    const [sh, sm] = firstBlock.start_time.split(':').map(Number)
+    const scheduledStart = new Date(`${r.date}T${String(sh).padStart(2,'0')}:${String(sm).padStart(2,'0')}:00+09:00`)
+    const late = differenceInMinutes(parseISO(r.clock_in), scheduledStart)
+    if (late > 0) totalLate += late
+  }
+
+  // 午後ブロック（sort_order=1）との比較
+  const pmBlock = sorted.find((b: any) => b.sort_order === 1)
+  if (pmBlock && r.pm_clock_in) {
+    const [sh, sm] = pmBlock.start_time.split(':').map(Number)
+    const scheduledStart = new Date(`${r.date}T${String(sh).padStart(2,'0')}:${String(sm).padStart(2,'0')}:00+09:00`)
+    const late = differenceInMinutes(parseISO(r.pm_clock_in), scheduledStart)
+    if (late > 0) totalLate += late
+  }
+
+  return totalLate
+}
+
+// 所定時間計算
+function calcScheduledMin(shiftBlocks: any[]): number {
+  if (!shiftBlocks || shiftBlocks.length === 0) return 0
+  return shiftBlocks.reduce((sum: number, b: any) => {
+    const [sh, sm] = b.start_time.split(':').map(Number)
+    const [eh, em] = b.end_time.split(':').map(Number)
+    return sum + (eh * 60 + em) - (sh * 60 + sm)
+  }, 0)
+}
 
 export default function AttendanceHistoryPage() {
   const { user, profile, loading, isAdmin, isLeader } = useAuth()
   const router = useRouter()
   const [month, setMonth] = useState(getCurrentMonth())
-  const [records, setRecords] = useState<AttendanceRecord[]>([])
+  const [records, setRecords] = useState<any[]>([])
+  const [shiftMap, setShiftMap] = useState<Record<string, any[]>>({})
   const [staffList, setStaffList] = useState<Profile[]>([])
   const [selectedStaffId, setSelectedStaffId] = useState('')
   const [fetching, setFetching] = useState(false)
@@ -32,8 +102,10 @@ export default function AttendanceHistoryPage() {
   }, [user, profile])
 
   useEffect(() => {
-    if (selectedStaffId) fetchRecords()
-    else if (!isAdmin && !isLeader && user) setSelectedStaffId(user.id)
+    if (selectedStaffId) {
+      fetchRecords()
+      fetchShifts()
+    }
   }, [selectedStaffId, month])
 
   const fetchStaff = async () => {
@@ -63,32 +135,33 @@ export default function AttendanceHistoryPage() {
     setFetching(false)
   }
 
+  const fetchShifts = async () => {
+    if (!selectedStaffId) return
+    const { start, end } = getMonthRange(month)
+    const { data } = await supabase
+      .from('shift_assignments')
+      .select('date, shift_patterns(shift_pattern_blocks(*))')
+      .eq('user_id', selectedStaffId)
+      .gte('date', start)
+      .lte('date', end)
+    const map: Record<string, any[]> = {}
+    for (const d of data ?? []) {
+      const blocks = (d.shift_patterns as any)?.shift_pattern_blocks ?? []
+      map[d.date] = blocks.sort((a: any, b: any) => a.sort_order - b.sort_order)
+    }
+    setShiftMap(map)
+  }
+
   const handleEarlyFinishReview = async (recordId: string, approved: boolean) => {
     if (!user) return
     setApproving(recordId)
-    const status = approved ? 'approved' : 'rejected'
-
-    // 承認/否認後に控除を再計算
     const rec = records.find(r => r.id === recordId)
     if (!rec) { setApproving(null); return }
 
-    let newEarlyLeaveMinutes = rec.early_leave_minutes
-    let newDeductionMinutes = rec.deduction_minutes
-
-    if (approved) {
-      // 承認 → 早退控除をゼロに
-      newEarlyLeaveMinutes = 0
-      newDeductionMinutes = Math.max(rec.deduction_minutes - rec.early_leave_minutes, 0)
-    } else {
-      // 否認 → 控除は据え置き（既に計算済）
-    }
-
     await supabase.from('attendance_records').update({
-      early_finish_status: status,
+      early_finish_status: approved ? 'approved' : 'rejected',
       early_finish_reviewed_by: user.id,
       early_finish_reviewed_at: new Date().toISOString(),
-      early_leave_minutes: newEarlyLeaveMinutes,
-      deduction_minutes: newDeductionMinutes,
       status: approved ? 'present' : 'early_leave',
     }).eq('id', recordId)
 
@@ -99,15 +172,28 @@ export default function AttendanceHistoryPage() {
   const prevMonth = () => setMonth(format(subMonths(parseISO(month + '-01'), 1), 'yyyy-MM'))
   const nextMonth = () => setMonth(format(addMonths(parseISO(month + '-01'), 1), 'yyyy-MM'))
 
+  // フロントエンドで計算
+  const computedRecords = records.map(r => {
+    const blocks = shiftMap[r.date] ?? []
+    const scheduledMin = calcScheduledMin(blocks)
+    const actualMin = calcActualMin(r)
+    const lateMin = calcLateMin(r, blocks)
+    const overtimeMin = scheduledMin > 0 ? Math.max(actualMin - scheduledMin, 0) : 0
+    const netLateDeduction = Math.max(lateMin - overtimeMin, 0)
+    const deductionMin = scheduledMin > 0 ? netLateDeduction : 0
+    return { ...r, _scheduledMin: scheduledMin, _actualMin: actualMin, _lateMin: lateMin, _overtimeMin: overtimeMin, _deductionMin: deductionMin }
+  })
+
   // 月次集計
   const summary = {
-    workDays: records.filter(r => ['present', 'late', 'early_leave'].includes(r.status)).length,
-    overtimeMin: records.reduce((s, r) => s + (r.overtime_minutes ?? 0), 0),
-    deductionMin: records.reduce((s, r) => s + (r.deduction_minutes ?? 0), 0),
-    lateCount: records.filter(r => (r.late_minutes ?? 0) > 0).length,
-    absentDays: records.filter(r => r.status === 'absent').length,
-    paidLeave: records.filter(r => r.status === 'paid_leave').length,
-    pendingApprovals: records.filter(r => r.early_finish_status === 'pending').length,
+    workDays: computedRecords.filter(r => ['present', 'late', 'early_leave'].includes(r.status)).length,
+    overtimeMin: computedRecords.reduce((s, r) => s + r._overtimeMin, 0),
+    deductionMin: computedRecords.reduce((s, r) => s + r._deductionMin, 0),
+    lateCount: computedRecords.filter(r => r._lateMin > 0).length,
+    absentDays: computedRecords.filter(r => r.status === 'absent').length,
+    paidLeave: computedRecords.filter(r => r.status === 'paid_leave').length,
+    actualMin: computedRecords.reduce((s, r) => s + r._actualMin, 0),
+    pendingApprovals: computedRecords.filter(r => r.early_finish_status === 'pending').length,
   }
 
   const canReview = isAdmin || isLeader
@@ -142,7 +228,7 @@ export default function AttendanceHistoryPage() {
           </div>
         </div>
 
-        {/* Summary */}
+        {/* Summary cards */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <div className="card text-center">
             <div className="text-xl font-bold text-gray-800">{summary.workDays}日</div>
@@ -168,9 +254,9 @@ export default function AttendanceHistoryPage() {
           </div>
         </div>
 
-        {/* Pending approvals banner */}
+        {/* Pending approvals */}
         {canReview && summary.pendingApprovals > 0 && (
-          <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 flex items-center gap-2">
+          <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
             <span className="text-amber-600 font-medium text-sm">
               ⚠️ 早上がり承認待ちが {summary.pendingApprovals} 件あります
             </span>
@@ -184,8 +270,10 @@ export default function AttendanceHistoryPage() {
               <thead className="bg-gray-50 border-b border-gray-100">
                 <tr>
                   <th className="table-th">日付</th>
-                  <th className="table-th">出勤</th>
-                  <th className="table-th">退勤</th>
+                  <th className="table-th">午前出勤</th>
+                  <th className="table-th">午前退勤</th>
+                  <th className="table-th">午後出勤</th>
+                  <th className="table-th">午後退勤</th>
                   <th className="table-th">所定</th>
                   <th className="table-th">実働</th>
                   <th className="table-th">残業</th>
@@ -196,22 +284,30 @@ export default function AttendanceHistoryPage() {
               </thead>
               <tbody className="divide-y divide-gray-50">
                 {fetching ? (
-                  <tr><td colSpan={9} className="text-center py-8 text-gray-400">読込中...</td></tr>
-                ) : records.length === 0 ? (
-                  <tr><td colSpan={9} className="text-center py-8 text-gray-400">この月の記録はありません</td></tr>
-                ) : records.map(r => (
+                  <tr><td colSpan={11} className="text-center py-8 text-gray-400">読込中...</td></tr>
+                ) : computedRecords.length === 0 ? (
+                  <tr><td colSpan={11} className="text-center py-8 text-gray-400">この月の記録はありません</td></tr>
+                ) : computedRecords.map(r => (
                   <tr key={r.id} className={`hover:bg-gray-50 ${r.early_finish_status === 'pending' ? 'bg-amber-50/40' : ''}`}>
                     <td className="table-td font-medium whitespace-nowrap">
                       {format(parseISO(r.date), 'M/d(EEE)', { locale: ja })}
                     </td>
                     <td className="table-td whitespace-nowrap">
-                      {formatTime(r.clock_in)}
-                      {r.late_minutes > 0 && (
-                        <div className="text-[10px] text-amber-600">+{formatMinutes(r.late_minutes)}</div>
+                      <span className={r._lateMin > 0 ? 'text-amber-600' : ''}>
+                        {r.am_clock_in ? format(parseISO(r.am_clock_in), 'HH:mm') : r.clock_in ? format(parseISO(r.clock_in), 'HH:mm') : '--:--'}
+                      </span>
+                      {r._lateMin > 0 && (
+                        <div className="text-[10px] text-amber-600">+{formatMinutes(r._lateMin)}</div>
                       )}
                     </td>
+                    <td className="table-td whitespace-nowrap text-gray-500">
+                      {r.am_clock_out ? format(parseISO(r.am_clock_out), 'HH:mm') : '--:--'}
+                    </td>
+                    <td className="table-td whitespace-nowrap text-gray-500">
+                      {r.pm_clock_in ? format(parseISO(r.pm_clock_in), 'HH:mm') : '--:--'}
+                    </td>
                     <td className="table-td whitespace-nowrap">
-                      {formatTime(r.clock_out)}
+                      {r.pm_clock_out ? format(parseISO(r.pm_clock_out), 'HH:mm') : r.clock_out ? format(parseISO(r.clock_out), 'HH:mm') : '--:--'}
                       {r.clock_out_reason && r.clock_out_reason !== 'normal' && (
                         <div className="text-[10px] text-gray-400">
                           {r.clock_out_reason === 'early_finish' ? '早上がり' : '早退'}
@@ -219,19 +315,19 @@ export default function AttendanceHistoryPage() {
                       )}
                     </td>
                     <td className="table-td text-gray-500">
-                      {r.scheduled_minutes > 0 ? formatMinutes(r.scheduled_minutes) : '—'}
+                      {r._scheduledMin > 0 ? formatMinutes(r._scheduledMin) : '—'}
                     </td>
                     <td className="table-td font-medium">
-                      {r.actual_minutes > 0 ? formatMinutes(r.actual_minutes) : '—'}
+                      {r._actualMin > 0 ? formatMinutes(r._actualMin) : '—'}
                     </td>
                     <td className="table-td">
-                      {r.overtime_minutes > 0
-                        ? <span className="text-amber-600 font-medium">+{formatMinutes(r.overtime_minutes)}</span>
+                      {r._overtimeMin > 0
+                        ? <span className="text-amber-600 font-medium">+{formatMinutes(r._overtimeMin)}</span>
                         : <span className="text-gray-300">—</span>}
                     </td>
                     <td className="table-td">
-                      {r.deduction_minutes > 0
-                        ? <span className="text-red-500 font-medium">-{formatMinutes(r.deduction_minutes)}</span>
+                      {r._deductionMin > 0
+                        ? <span className="text-red-500 font-medium">-{formatMinutes(r._deductionMin)}</span>
                         : <span className="text-gray-300">—</span>}
                     </td>
                     <td className="table-td">
@@ -247,18 +343,12 @@ export default function AttendanceHistoryPage() {
                     <td className="table-td">
                       {canReview && r.early_finish_status === 'pending' ? (
                         <div className="flex gap-1">
-                          <button
-                            onClick={() => handleEarlyFinishReview(r.id, true)}
-                            disabled={approving === r.id}
-                            className="text-xs bg-emerald-100 text-emerald-700 hover:bg-emerald-200 px-2 py-1 rounded font-medium"
-                          >
+                          <button onClick={() => handleEarlyFinishReview(r.id, true)} disabled={approving === r.id}
+                            className="text-xs bg-emerald-100 text-emerald-700 hover:bg-emerald-200 px-2 py-1 rounded font-medium">
                             承認
                           </button>
-                          <button
-                            onClick={() => handleEarlyFinishReview(r.id, false)}
-                            disabled={approving === r.id}
-                            className="text-xs bg-red-100 text-red-600 hover:bg-red-200 px-2 py-1 rounded font-medium"
-                          >
+                          <button onClick={() => handleEarlyFinishReview(r.id, false)} disabled={approving === r.id}
+                            className="text-xs bg-red-100 text-red-600 hover:bg-red-200 px-2 py-1 rounded font-medium">
                             否認
                           </button>
                         </div>
@@ -273,8 +363,8 @@ export default function AttendanceHistoryPage() {
           </div>
         </div>
 
-        {/* Month totals */}
-        {records.length > 0 && (
+        {/* 月次サマリー */}
+        {computedRecords.length > 0 && (
           <div className="card bg-gray-50">
             <h3 className="text-xs font-semibold text-gray-500 mb-3">月次サマリー</h3>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-x-8 gap-y-2 text-sm">
@@ -282,6 +372,7 @@ export default function AttendanceHistoryPage() {
               <SummaryRow label="欠勤日数" value={`${summary.absentDays}日`} highlight={summary.absentDays > 0 ? 'text-red-500' : undefined} />
               <SummaryRow label="有給取得" value={`${summary.paidLeave}日`} />
               <SummaryRow label="遅刻回数" value={`${summary.lateCount}回`} highlight={summary.lateCount > 0 ? 'text-amber-600' : undefined} />
+              <SummaryRow label="実働合計" value={summary.actualMin > 0 ? formatMinutes(summary.actualMin) : '—'} />
               <SummaryRow label="残業合計" value={summary.overtimeMin > 0 ? formatMinutes(summary.overtimeMin) : '—'} highlight={summary.overtimeMin > 0 ? 'text-amber-600' : undefined} />
               <SummaryRow label="控除合計" value={summary.deductionMin > 0 ? formatMinutes(summary.deductionMin) : '—'} highlight={summary.deductionMin > 0 ? 'text-red-500' : undefined} />
             </div>
