@@ -3,83 +3,79 @@ import { useRouter } from 'next/router'
 import Layout from '@/components/Layout'
 import { useAuth } from '@/lib/auth'
 import { supabase } from '@/lib/supabase'
-import { detectConsecutiveHolidays, HolidaySettings } from '@/lib/holidays'
-import { format } from 'date-fns'
+import { format, parseISO, addDays, eachDayOfInterval } from 'date-fns'
+import { ja } from 'date-fns/locale'
 
-const WEEKDAY_LABELS = ['日', '月', '火', '水', '木', '金', '土']
+type ClosedPeriod = {
+  id: string
+  name: string
+  start_date: string
+  end_date: string
+  period_type: 'obon' | 'custom'
+  year: number
+}
 
 export default function HolidaySettingsPage() {
   const { user, profile, loading, isAdmin } = useAuth()
   const router = useRouter()
-  const [settings, setSettings] = useState<HolidaySettings>({
-    min_consecutive_days: 3,
-    buffer_days: 2,
-    closed_weekdays: [0, 4],
-    include_holidays: true,
-  })
+
+  const [closedPeriods, setClosedPeriods] = useState<ClosedPeriod[]>([])
+  const [showForm, setShowForm] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [preview, setPreview] = useState<Array<{ start: string; end: string; days: number; label: string }>>([])
-  const [loadingPreview, setLoadingPreview] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [form, setForm] = useState({
+    name: 'お盆休み',
+    start_date: '',
+    end_date: '',
+    period_type: 'obon' as 'obon' | 'custom',
+    year: new Date().getFullYear(),
+  })
 
   useEffect(() => {
     if (!loading && !user) router.replace('/login')
-  }, [user, loading])
+    else if (!loading && profile && !isAdmin) router.replace('/dashboard')
+  }, [user, loading, profile, isAdmin])
 
   useEffect(() => {
-    if (!loading && profile && !isAdmin) router.replace('/dashboard')
-  }, [loading, profile, isAdmin])
-
-  useEffect(() => {
-    if (isAdmin) fetchSettings()
+    if (isAdmin) fetchClosedPeriods()
   }, [isAdmin])
 
-  const fetchSettings = async () => {
+  const fetchClosedPeriods = async () => {
     const { data } = await supabase
-      .from('holiday_settings')
+      .from('closed_periods')
       .select('*')
-      .order('updated_at', { ascending: false })
-      .limit(1)
-      .single()
-    if (data) {
-      setSettings({
-        min_consecutive_days: data.min_consecutive_days,
-        buffer_days: data.buffer_days,
-        closed_weekdays: data.closed_weekdays,
-        include_holidays: data.include_holidays,
-      })
-    }
-    loadPreview(data ?? settings)
-  }
-
-  const loadPreview = async (s: HolidaySettings) => {
-    setLoadingPreview(true)
-    const year = new Date().getFullYear()
-    const blocks = await detectConsecutiveHolidays(year, s)
-    setPreview(blocks)
-    setLoadingPreview(false)
-  }
-
-  const toggleWeekday = (dow: number) => {
-    setSettings(s => ({
-      ...s,
-      closed_weekdays: s.closed_weekdays.includes(dow)
-        ? s.closed_weekdays.filter(d => d !== dow)
-        : [...s.closed_weekdays, dow].sort(),
-    }))
+      .order('start_date', { ascending: false })
+    setClosedPeriods(data ?? [])
   }
 
   const handleSave = async () => {
+    if (!form.start_date || !form.end_date) return
     setSaving(true)
-    await supabase.from('holiday_settings').update({
-      min_consecutive_days: settings.min_consecutive_days,
-      buffer_days: settings.buffer_days,
-      closed_weekdays: settings.closed_weekdays,
-      include_holidays: settings.include_holidays,
-      updated_by: user?.id,
-    }).eq('id', (await supabase.from('holiday_settings').select('id').single()).data?.id)
+    await supabase.from('closed_periods').insert({
+      name: form.name,
+      start_date: form.start_date,
+      end_date: form.end_date,
+      period_type: form.period_type,
+      year: form.year,
+    })
     setSaving(false)
-    loadPreview(settings)
+    setShowForm(false)
+    setForm({ name: 'お盆休み', start_date: '', end_date: '', period_type: 'obon', year: new Date().getFullYear() })
+    fetchClosedPeriods()
   }
+
+  const handleDelete = async (id: string) => {
+    if (!confirm('この休診期間を削除しますか？')) return
+    await supabase.from('closed_periods').delete().eq('id', id)
+    fetchClosedPeriods()
+  }
+
+  // 年末年始の自動表示（12/29〜1/3）
+  const currentYear = new Date().getFullYear()
+  const nenmatsu = [
+    { label: `${currentYear}年末年始`, dates: `${currentYear}/12/29 〜 ${currentYear + 1}/1/3` },
+    { label: `${currentYear - 1}年末年始`, dates: `${currentYear - 1}/12/29 〜 ${currentYear}/1/3` },
+  ]
 
   if (loading || !profile) return (
     <div className="min-h-screen flex items-center justify-center">
@@ -91,126 +87,119 @@ export default function HolidaySettingsPage() {
     <Layout>
       <div className="max-w-2xl mx-auto space-y-5">
         <div>
-          <h1 className="text-xl font-semibold text-gray-900">🗓️ 連休・有給特別期間 設定</h1>
-          <p className="text-xs text-gray-400 mt-0.5">連休の定義と特別有給フローの発動条件を設定します</p>
+          <h1 className="text-xl font-semibold text-gray-900">🗓️ 休診日設定</h1>
+          <p className="text-xs text-gray-400 mt-0.5">お盆・臨時休診などの特別休診日を設定します</p>
         </div>
 
-        <div className="card space-y-5">
-          {/* 定休日 */}
-          <div>
-            <label className="label text-sm mb-2">定休日（曜日）</label>
-            <div className="flex gap-2">
-              {WEEKDAY_LABELS.map((label, dow) => (
-                <button
-                  key={dow}
-                  onClick={() => toggleWeekday(dow)}
-                  className={`w-9 h-9 rounded-lg text-sm font-medium transition-all
-                    ${settings.closed_weekdays.includes(dow)
-                      ? 'bg-clinic-600 text-white'
-                      : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
+        {/* 自動設定（年末年始） */}
+        <div className="card space-y-3">
+          <h2 className="text-sm font-semibold text-gray-700">🎍 年末年始（自動設定）</h2>
+          <p className="text-xs text-gray-400">毎年12/29〜1/3は自動的に休診日として扱われます。</p>
+          <div className="space-y-2">
+            {nenmatsu.map(n => (
+              <div key={n.label} className="flex items-center justify-between bg-gray-50 rounded-xl px-4 py-2.5">
+                <span className="text-sm text-gray-700">{n.label}</span>
+                <span className="text-xs text-gray-500">{n.dates}</span>
+              </div>
+            ))}
           </div>
-
-          {/* 祝日を含める */}
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-sm font-medium text-gray-700">祝日を定休日に含める</div>
-              <div className="text-xs text-gray-400">日本の祝日APIから自動取得</div>
-            </div>
-            <button
-              onClick={() => setSettings(s => ({ ...s, include_holidays: !s.include_holidays }))}
-              className={`relative w-11 h-6 rounded-full transition-colors
-                ${settings.include_holidays ? 'bg-clinic-500' : 'bg-gray-300'}`}
-            >
-              <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform
-                ${settings.include_holidays ? 'translate-x-5' : 'translate-x-0.5'}`} />
-            </button>
-          </div>
-
-          {/* 連休最小日数 */}
-          <div>
-            <label className="label">連休と見なす最小日数</label>
-            <div className="flex items-center gap-3">
-              <input
-                type="range"
-                min={2} max={7}
-                value={settings.min_consecutive_days}
-                onChange={e => setSettings(s => ({ ...s, min_consecutive_days: Number(e.target.value) }))}
-                className="flex-1 accent-clinic-600"
-              />
-              <span className="text-sm font-semibold text-clinic-700 w-8 text-center">
-                {settings.min_consecutive_days}日
-              </span>
-            </div>
-            <p className="text-xs text-gray-400 mt-1">
-              定休日が{settings.min_consecutive_days}日以上連続した場合、連休と判定します
-            </p>
-          </div>
-
-          {/* 前後バッファ */}
-          <div>
-            <label className="label">連休前後の特別申請期間</label>
-            <div className="flex items-center gap-3">
-              <input
-                type="range"
-                min={1} max={5}
-                value={settings.buffer_days}
-                onChange={e => setSettings(s => ({ ...s, buffer_days: Number(e.target.value) }))}
-                className="flex-1 accent-clinic-600"
-              />
-              <span className="text-sm font-semibold text-clinic-700 w-8 text-center">
-                ±{settings.buffer_days}日
-              </span>
-            </div>
-            <p className="text-xs text-gray-400 mt-1">
-              連休の前後{settings.buffer_days}日間が優先順位フローの対象になります
-            </p>
-          </div>
-
-          <button onClick={handleSave} disabled={saving} className="btn-primary w-full">
-            {saving ? '保存中...' : '設定を保存'}
-          </button>
         </div>
 
-        {/* Preview */}
+        {/* 定休日 */}
+        <div className="card space-y-3">
+          <h2 className="text-sm font-semibold text-gray-700">📅 定休日（固定）</h2>
+          <div className="space-y-2">
+            {[
+              { label: '日曜日', desc: '毎週日曜は休診' },
+              { label: '祝日', desc: '国民の祝日は休診' },
+            ].map(item => (
+              <div key={item.label} className="flex items-center justify-between bg-gray-50 rounded-xl px-4 py-2.5">
+                <span className="text-sm text-gray-700">{item.label}</span>
+                <span className="text-xs text-gray-400">{item.desc}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* お盆・臨時休診 */}
         <div className="card space-y-3">
           <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-gray-700">
-              今年の連休プレビュー（{new Date().getFullYear()}年）
-            </h2>
-            <button onClick={() => loadPreview(settings)} className="text-xs text-clinic-600 hover:text-clinic-800">
-              更新
+            <h2 className="text-sm font-semibold text-gray-700">🎋 お盆・臨時休診</h2>
+            <button onClick={() => setShowForm(true)} className="btn-primary text-xs px-3 py-1.5">
+              ＋ 追加
             </button>
           </div>
 
-          {loadingPreview ? (
-            <p className="text-sm text-gray-400 text-center py-4">読込中...</p>
-          ) : preview.length === 0 ? (
-            <p className="text-sm text-gray-400 text-center py-4">該当する連休はありません</p>
+          {closedPeriods.length === 0 ? (
+            <p className="text-sm text-gray-400 text-center py-4">設定がありません</p>
           ) : (
             <div className="space-y-2">
-              {preview.map((block, i) => (
-                <div key={i} className="bg-gray-50 rounded-xl p-3">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <span className="badge bg-clinic-100 text-clinic-700 font-medium">{block.label}</span>
-                      <span className="text-sm text-gray-700">{block.start} 〜 {block.end}</span>
-                      <span className="text-xs text-gray-400">{block.days}日間</span>
-                    </div>
+              {closedPeriods.map(p => (
+                <div key={p.id} className="flex items-center justify-between bg-gray-50 rounded-xl px-4 py-2.5">
+                  <div>
+                    <div className="text-sm font-medium text-gray-700">{p.name}</div>
+                    <div className="text-xs text-gray-400">{p.start_date} 〜 {p.end_date}</div>
                   </div>
-                  <div className="text-xs text-amber-600 mt-1">
-                    ⭐ 特別申請期間: 前後±{settings.buffer_days}日
-                  </div>
+                  <button onClick={() => handleDelete(p.id)}
+                    className="text-xs text-red-400 hover:text-red-600 px-2 py-1 rounded hover:bg-red-50">
+                    削除
+                  </button>
                 </div>
               ))}
             </div>
           )}
         </div>
       </div>
+
+      {/* 追加フォーム */}
+      {showForm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-6 space-y-4">
+            <h2 className="font-semibold text-gray-800">休診期間を追加</h2>
+            <div>
+              <label className="label">種別</label>
+              <div className="grid grid-cols-2 gap-2">
+                {([['obon', 'お盆'], ['custom', '臨時休診']] as const).map(([v, l]) => (
+                  <button key={v}
+                    onClick={() => setForm(f => ({
+                      ...f,
+                      period_type: v,
+                      name: v === 'obon' ? 'お盆休み' : '臨時休診',
+                    }))}
+                    className={`py-2 rounded-xl text-sm font-medium border-2 transition-all
+                      ${form.period_type === v ? 'border-clinic-500 bg-clinic-50 text-clinic-700' : 'border-gray-200 text-gray-500'}`}>
+                    {l}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <label className="label">名称</label>
+              <input className="input" value={form.name}
+                onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+                placeholder="例: お盆休み2026" />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="label">開始日</label>
+                <input type="date" className="input" value={form.start_date}
+                  onChange={e => setForm(f => ({ ...f, start_date: e.target.value }))} />
+              </div>
+              <div>
+                <label className="label">終了日</label>
+                <input type="date" className="input" value={form.end_date}
+                  onChange={e => setForm(f => ({ ...f, end_date: e.target.value }))} />
+              </div>
+            </div>
+            <div className="flex gap-3">
+              <button onClick={() => setShowForm(false)} className="btn-secondary flex-1">キャンセル</button>
+              <button onClick={handleSave} disabled={saving} className="btn-primary flex-1">
+                {saving ? '保存中...' : '追加'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </Layout>
   )
 }
