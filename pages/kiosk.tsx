@@ -1,14 +1,13 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
-import { todayString, formatTime, formatMinutes, calcScheduledMinutes } from '@/lib/utils'
-import { format } from 'date-fns'
+import { todayString, formatMinutes } from '@/lib/utils'
+import { format, differenceInMinutes, parseISO } from 'date-fns'
 import { ja } from 'date-fns/locale'
 
-type Step = 'blocked' | 'staff_login' | 'clock_action' | 'done'
+type Step = 'staff_login' | 'blocked' | 'clock_action' | 'done'
 
 type ShiftBlock = {
   sort_order: number
-  label: string
   start_time: string
   end_time: string
 }
@@ -27,8 +26,6 @@ export default function KioskPage() {
   const [loginError, setLoginError] = useState('')
   const [staffSession, setStaffSession] = useState<StaffSession | null>(null)
   const [saving, setSaving] = useState(false)
-  const [clockOutReason, setClockOutReason] = useState<'normal' | 'early_finish' | 'early_leave'>('normal')
-  const [showReasonSelect, setShowReasonSelect] = useState(false)
   const [resultMessage, setResultMessage] = useState('')
   const [now, setNow] = useState(new Date())
 
@@ -50,17 +47,12 @@ export default function KioskPage() {
     try {
       const res = await fetch('https://api.ipify.org?format=json')
       const { ip } = await res.json()
-      const { data } = await supabase
-        .from('kiosk_settings')
-        .select('allowed_ips')
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .single()
+      const { data } = await supabase.from('kiosk_settings').select('allowed_ips')
+        .order('created_at', { ascending: false }).limit(1).single()
       const allowed: string[] = data?.allowed_ips ?? []
-      if (allowed.length === 0) { setStep('staff_login'); return }
-      if (!allowed.includes(ip)) setStep('blocked')
+      if (allowed.length > 0 && !allowed.includes(ip)) setStep('blocked')
     } catch {
-      setStep('staff_login')
+      // ネットワークエラーは通す
     }
   }
 
@@ -71,8 +63,6 @@ export default function KioskPage() {
     setLoginError('')
     setStaffSession(null)
     setResultMessage('')
-    setShowReasonSelect(false)
-    setClockOutReason('normal')
   }
 
   const staffLogin = async () => {
@@ -105,88 +95,89 @@ export default function KioskPage() {
     await supabase.auth.signOut()
   }
 
-  // シフトブロックから午前・午後を判定（未登録の場合は両方あるとみなす）
   const hasAmShift = (blocks: ShiftBlock[]) => blocks.length === 0 || blocks.some(b => b.sort_order === 0)
   const hasPmShift = (blocks: ShiftBlock[]) => blocks.length === 0 || blocks.some(b => b.sort_order === 1)
 
-  // 次のアクションを判定
-  const getNextAction = (session: StaffSession): { label: string; type: string | null; color: string } => {
+  const getPhase = (session: StaffSession): 'am_in' | 'am_out' | 'pm_in' | 'pm_out' | 'done' => {
     const r = session.record
-    const hasPm = hasPmShift(session.blocks)
-    const hasAm = hasAmShift(session.blocks)
-
-    if (!r || (!r.am_clock_in && !r.am_leave)) {
-      return { label: '出勤', type: 'am_in', color: 'bg-emerald-500' }
-    }
-    if (r.am_clock_in && !r.am_clock_out && hasAm && hasPm) {
-      return { label: '午前退勤', type: 'am_out', color: 'bg-amber-500' }
-    }
-    if ((r.am_clock_out || r.am_leave) && !r.pm_clock_in && hasPm) {
-      return { label: '午後出勤', type: 'pm_in', color: 'bg-emerald-500' }
-    }
-    if (r.pm_clock_in && !r.pm_clock_out) {
-      return { label: '退勤', type: 'pm_out', color: 'bg-red-500' }
-    }
-    if (r.am_clock_in && !r.am_clock_out && !hasPm) {
-      return { label: '退勤', type: 'am_out', color: 'bg-red-500' }
-    }
-    return { label: '打刻済み', type: null, color: 'bg-gray-400' }
+    if (!r || (!r.am_clock_in && !r.am_leave)) return 'am_in'
+    if (r.am_clock_in && !r.am_clock_out && hasAmShift(session.blocks) && hasPmShift(session.blocks)) return 'am_out'
+    if ((r.am_clock_out || r.am_leave) && !r.pm_clock_in && hasPmShift(session.blocks)) return 'pm_in'
+    if (r.pm_clock_in && !r.pm_clock_out) return 'pm_out'
+    if (r.am_clock_in && !r.am_clock_out && !hasPmShift(session.blocks)) return 'pm_out'
+    return 'done'
   }
 
-  const doClock = async () => {
-    if (!staffSession || saving) return
-    const action = getNextAction(staffSession)
-    if (!action.type) return
+  const calcEarlyMinutes = (session: StaffSession, clockOutISO: string, isAm: boolean): number => {
+    const today = todayString()
+    const block = isAm
+      ? session.blocks.find(b => b.sort_order === 0)
+      : session.blocks[session.blocks.length - 1]
+    if (!block) return 0
+    const [eh, em] = block.end_time.split(':').map(Number)
+    const scheduledEnd = new Date(`${today}T${String(eh).padStart(2,'0')}:${String(em).padStart(2,'0')}:00`)
+    return Math.max(differenceInMinutes(scheduledEnd, parseISO(clockOutISO)), 0)
+  }
 
-    // 退勤系は理由選択が必要
-    if ((action.type === 'am_out' || action.type === 'pm_out') && !showReasonSelect) {
-      setShowReasonSelect(true)
-      return
-    }
+  const doClock = async (isEarlyLeave: boolean = false) => {
+    if (!staffSession || saving) return
+    const phase = getPhase(staffSession)
+    if (phase === 'done') return
 
     setSaving(true)
-    const nowIso = new Date().toISOString()
+    const nowISO = new Date().toISOString()
     const today = todayString()
 
-    if (!staffSession.record) {
+    if (phase === 'am_in') {
       const { data } = await supabase.from('attendance_records').insert({
         user_id: staffSession.id,
         date: today,
-        am_clock_in: nowIso,
-        clock_in: nowIso,
+        am_clock_in: nowISO,
+        clock_in: nowISO,
         status: 'present',
         clock_out_reason: 'normal',
         early_finish_status: 'not_required',
       }).select().single()
       setStaffSession(s => s ? { ...s, record: data } : s)
-    } else {
+      setResultMessage(`${staffSession.name} さん、出勤しました ✅`)
+    } else if (phase === 'pm_in') {
+      await supabase.from('attendance_records').update({ pm_clock_in: nowISO }).eq('id', staffSession.record.id)
+      setResultMessage(`${staffSession.name} さん、午後出勤しました ✅`)
+    } else if (phase === 'am_out' || phase === 'pm_out') {
+      const isAm = phase === 'am_out'
       const update: any = {}
-      if (action.type === 'am_in') { update.am_clock_in = nowIso; update.clock_in = nowIso }
-      if (action.type === 'am_out') { update.am_clock_out = nowIso; update.clock_out_reason = clockOutReason }
-      if (action.type === 'pm_in') update.pm_clock_in = nowIso
-      if (action.type === 'pm_out') {
-        update.pm_clock_out = nowIso
-        update.clock_out = nowIso
-        update.clock_out_reason = clockOutReason
+
+      if (isEarlyLeave) {
+        if (isAm) update.am_clock_out = nowISO
+        else { update.pm_clock_out = nowISO; update.clock_out = nowISO }
+        update.status = 'early_leave'
+        update.clock_out_reason = 'early_leave'
+        update.early_finish_status = 'not_required'
+        setResultMessage(`${staffSession.name} さん、早退しました`)
+      } else {
+        if (isAm) update.am_clock_out = nowISO
+        else { update.pm_clock_out = nowISO; update.clock_out = nowISO }
+        update.clock_out_reason = 'normal'
+
+        const earlyMin = calcEarlyMinutes(staffSession, nowISO, isAm)
+        if (earlyMin > 0) {
+          update.early_finish_status = 'pending'
+          update.status = 'present'
+        } else {
+          update.early_finish_status = 'not_required'
+          update.status = 'present'
+        }
+        setResultMessage(`${staffSession.name} さん、${isAm ? '午前退勤' : '退勤'}しました ✅`)
       }
       await supabase.from('attendance_records').update(update).eq('id', staffSession.record.id)
     }
 
     setSaving(false)
-    setShowReasonSelect(false)
-
-    const actionLabels: Record<string, string> = {
-      am_in: '出勤しました ✅',
-      am_out: '午前退勤しました ✅',
-      pm_in: '午後出勤しました ✅',
-      pm_out: '退勤しました ✅',
-    }
-    setResultMessage(`${staffSession.name} さん、${actionLabels[action.type]}`)
     setStep('done')
   }
 
-  const nextAction = staffSession ? getNextAction(staffSession) : null
-  const isClockOut = nextAction?.type === 'am_out' || nextAction?.type === 'pm_out'
+  const phase = staffSession ? getPhase(staffSession) : null
+  const isClockOut = phase === 'am_out' || phase === 'pm_out'
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-clinic-900 to-clinic-700 flex flex-col items-center justify-center p-6">
@@ -275,43 +266,32 @@ export default function KioskPage() {
             )}
 
             {/* 打刻済み */}
-            {!nextAction?.type && (
+            {phase === 'done' && (
               <div className="text-center text-sm text-clinic-600 bg-clinic-50 rounded-xl py-4">
                 本日の打刻は完了しています
               </div>
             )}
 
-            {/* 退勤理由選択 */}
-            {showReasonSelect && isClockOut && (
-              <div className="space-y-2">
-                <p className="text-xs text-gray-500 text-center font-medium">退勤理由を選択してください</p>
-                {([
-                  { value: 'normal' as const, label: '通常退勤', icon: '✅' },
-                  { value: 'early_finish' as const, label: '業務完了（早上がり）', icon: '🏃' },
-                  { value: 'early_leave' as const, label: '早退（体調不良・私用）', icon: '🤒' },
-                ]).map(opt => (
-                  <button key={opt.value} onClick={() => setClockOutReason(opt.value)}
-                    className={`w-full text-left rounded-xl px-4 py-3 border-2 text-sm transition-all
-                      ${clockOutReason === opt.value ? 'border-clinic-500 bg-clinic-50' : 'border-gray-200 hover:border-gray-300'}`}>
-                    {opt.icon} {opt.label}
-                    {clockOutReason === opt.value && <span className="float-right text-clinic-500">✓</span>}
-                  </button>
-                ))}
-                <div className="flex gap-2 pt-1">
-                  <button onClick={() => setShowReasonSelect(false)} className="btn-secondary flex-1 text-sm">戻る</button>
-                  <button onClick={doClock} disabled={saving} className="btn-primary flex-1 text-sm">
-                    {saving ? '打刻中...' : '確定'}
-                  </button>
-                </div>
-              </div>
+            {/* 出勤・午後出勤ボタン */}
+            {(phase === 'am_in' || phase === 'pm_in') && (
+              <button onClick={() => doClock(false)} disabled={saving}
+                className="w-full py-5 rounded-xl text-white font-bold text-xl active:scale-95 transition-all shadow-lg bg-emerald-500">
+                {saving ? '打刻中...' : phase === 'am_in' ? '🟢 出勤' : '🟢 午後出勤'}
+              </button>
             )}
 
-            {/* 打刻ボタン */}
-            {nextAction?.type && !showReasonSelect && (
-              <button onClick={doClock} disabled={saving}
-                className={`w-full py-5 rounded-xl text-white font-bold text-xl active:scale-95 transition-all shadow-lg ${nextAction.color}`}>
-                {saving ? '打刻中...' : nextAction.label}
-              </button>
+            {/* 退勤・早退ボタン */}
+            {isClockOut && (
+              <div className="space-y-3">
+                <button onClick={() => doClock(false)} disabled={saving}
+                  className="w-full py-4 rounded-xl text-white font-bold text-xl active:scale-95 transition-all shadow-lg bg-red-500">
+                  {saving ? '打刻中...' : phase === 'am_out' ? '🔴 午前退勤' : '🔴 退勤'}
+                </button>
+                <button onClick={() => doClock(true)} disabled={saving}
+                  className="w-full py-4 rounded-xl text-white font-bold text-xl active:scale-95 transition-all shadow-lg bg-orange-400">
+                  {saving ? '打刻中...' : phase === 'am_out' ? '🟠 午前早退' : '🟠 早退'}
+                </button>
+              </div>
             )}
 
             <button onClick={resetAll} className="w-full text-xs text-gray-400 hover:text-gray-600 py-2">
