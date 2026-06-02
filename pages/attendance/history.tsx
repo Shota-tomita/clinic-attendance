@@ -317,6 +317,7 @@ export default function AttendanceHistoryPage() {
               <thead className="bg-gray-50 border-b border-gray-100">
                 <tr>
                   <th className="table-th">日付</th>
+                  <th className="table-th">シフト</th>
                   <th className="table-th">午前出勤</th>
                   <th className="table-th">午前退勤</th>
                   <th className="table-th">午後出勤</th>
@@ -331,13 +332,28 @@ export default function AttendanceHistoryPage() {
               </thead>
               <tbody className="divide-y divide-gray-50">
                 {fetching ? (
-                  <tr><td colSpan={11} className="text-center py-8 text-gray-400">読込中...</td></tr>
+                  <tr><td colSpan={12} className="text-center py-8 text-gray-400">読込中...</td></tr>
                 ) : computedRecords.length === 0 ? (
-                  <tr><td colSpan={11} className="text-center py-8 text-gray-400">この月の記録はありません</td></tr>
+                  <tr><td colSpan={12} className="text-center py-8 text-gray-400">この月の記録はありません</td></tr>
                 ) : computedRecords.map(r => (
                   <tr key={r.id} className={`hover:bg-gray-50 ${r.early_finish_status === 'pending' ? 'bg-amber-50/40' : ''}`}>
                     <td className="table-td font-medium whitespace-nowrap">
                       {format(parseISO(r.date), 'M/d(EEE)', { locale: ja })}
+                    </td>
+                    <td className="table-td whitespace-nowrap">
+                      {(() => {
+                        const blocks = shiftMap[r.date] ?? []
+                        if (blocks.length === 0) return <span className="text-gray-300 text-xs">未設定</span>
+                        return (
+                          <div className="text-xs text-gray-500 space-y-0.5">
+                            {blocks.map((b: any) => (
+                              <div key={b.sort_order}>
+                                {b.start_time.slice(0,5)}〜{b.end_time.slice(0,5)}
+                              </div>
+                            ))}
+                          </div>
+                        )
+                      })()}
                     </td>
                     <td className="table-td whitespace-nowrap">
                       <span className={r._lateMin > 0 ? 'text-amber-600' : ''}>
