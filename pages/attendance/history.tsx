@@ -89,6 +89,7 @@ function calcScheduledMinWithHalfLeave(r: any, shiftBlocks: any[]): number {
 }
 
 // 遅刻分数計算（午前・午後それぞれの開始時間と比較）
+// シフト開始より早い場合は遅刻0
 function calcLateMin(r: any, shiftBlocks: any[]): number {
   if (!shiftBlocks || shiftBlocks.length === 0) return 0
   const sorted = [...shiftBlocks].sort((a: any, b: any) => a.sort_order - b.sort_order)
@@ -96,18 +97,12 @@ function calcLateMin(r: any, shiftBlocks: any[]): number {
 
   // 午前ブロック（sort_order=0）との比較
   const amBlock = sorted.find((b: any) => b.sort_order === 0)
-  if (amBlock && r.am_clock_in) {
+  const clockIn = r.am_clock_in || r.clock_in
+  if (amBlock && clockIn) {
     const [sh, sm] = amBlock.start_time.split(':').map(Number)
     const scheduledStart = new Date(`${r.date}T${String(sh).padStart(2,'0')}:${String(sm).padStart(2,'0')}:00+09:00`)
-    const late = differenceInMinutes(parseISO(r.am_clock_in), scheduledStart)
-    if (late > 0) totalLate += late
-  } else if (!amBlock && r.clock_in && sorted.length > 0) {
-    // 旧形式フォールバック
-    const firstBlock = sorted[0]
-    const [sh, sm] = firstBlock.start_time.split(':').map(Number)
-    const scheduledStart = new Date(`${r.date}T${String(sh).padStart(2,'0')}:${String(sm).padStart(2,'0')}:00+09:00`)
-    const late = differenceInMinutes(parseISO(r.clock_in), scheduledStart)
-    if (late > 0) totalLate += late
+    const late = differenceInMinutes(parseISO(clockIn), scheduledStart)
+    if (late > 0) totalLate += late // 早出（マイナス）は0扱い
   }
 
   // 午後ブロック（sort_order=1）との比較
@@ -116,7 +111,7 @@ function calcLateMin(r: any, shiftBlocks: any[]): number {
     const [sh, sm] = pmBlock.start_time.split(':').map(Number)
     const scheduledStart = new Date(`${r.date}T${String(sh).padStart(2,'0')}:${String(sm).padStart(2,'0')}:00+09:00`)
     const late = differenceInMinutes(parseISO(r.pm_clock_in), scheduledStart)
-    if (late > 0) totalLate += late
+    if (late > 0) totalLate += late // 早出（マイナス）は0扱い
   }
 
   return totalLate
