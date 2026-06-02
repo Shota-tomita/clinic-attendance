@@ -29,7 +29,8 @@ const navItems: NavItem[] = [
   { href: '/admin/bonus',             label: 'ボーナス試算',         icon: '💰', roles: ['admin'] },
   { href: '/admin/export',            label: '月次CSV出力',          icon: '📥', roles: ['admin'] },
   { href: '/admin/kiosk-settings',    label: 'キオスク設定',         icon: '🖥️', roles: ['admin'] },
-  { href: '/admin/holiday-settings',  label: '連休・特別期間設定',   icon: '🗓️', roles: ['admin'] },
+  { href: '/admin/holiday-settings',  label: '休診日設定',           icon: '🗓️', roles: ['admin'] },
+  { href: '/admin/planned-leave',     label: '計画的有給付与',       icon: '📋', roles: ['admin'] },
   { href: '/admin/leave-priority',    label: '有給優先順位',         icon: '📊', roles: ['admin'] },
   { href: '/admin/lineworks-settings',label: 'LINE WORKS設定',       icon: '💬', roles: ['admin'] },
 ]
