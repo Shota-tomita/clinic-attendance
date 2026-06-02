@@ -3,12 +3,11 @@ import { useRouter } from 'next/router'
 import Layout from '@/components/Layout'
 import { useAuth } from '@/lib/auth'
 import { supabase } from '@/lib/supabase'
-import { format } from 'date-fns'
+import { format, differenceInMinutes, parseISO } from 'date-fns'
 import { ja } from 'date-fns/locale'
 
 type ShiftBlock = {
   sort_order: number
-  label: string
   start_time: string
   end_time: string
 }
@@ -63,74 +62,118 @@ export default function AttendancePage() {
     }
   }
 
-const hasAmShift = shiftBlocks.length === 0 || shiftBlocks.some(b => b.sort_order === 0)
-const hasPmShift = shiftBlocks.length === 0 || shiftBlocks.some(b => b.sort_order === 1)
+  const hasAmShift = shiftBlocks.length === 0 || shiftBlocks.some(b => b.sort_order === 0)
+  const hasPmShift = shiftBlocks.length === 0 || shiftBlocks.some(b => b.sort_order === 1)
 
-  const getNextAction = (): { label: string; type: string | null; color: string } => {
-    if (!record) {
-      return { label: '出勤', type: 'am_in', color: 'bg-emerald-500' }
-    }
-    if (!record.am_clock_in && !record.am_leave) {
-      return { label: '出勤', type: 'am_in', color: 'bg-emerald-500' }
-    }
-    if (record.am_clock_in && !record.am_clock_out && hasAmShift && hasPmShift) {
-      return { label: '午前退勤', type: 'am_out', color: 'bg-amber-500' }
-    }
-    if ((record.am_clock_out || record.am_leave) && !record.pm_clock_in && hasPmShift) {
-      return { label: '午後出勤', type: 'pm_in', color: 'bg-emerald-500' }
-    }
-    if (record.pm_clock_in && !record.pm_clock_out) {
-      return { label: '退勤', type: 'pm_out', color: 'bg-red-500' }
-    }
-    if (record.am_clock_in && !record.am_clock_out && !hasPmShift) {
-      return { label: '退勤', type: 'am_out', color: 'bg-red-500' }
-    }
-    return { label: '打刻済み', type: null, color: 'bg-gray-400' }
+  // 早上がりかどうか判定（退勤時）
+  const calcEarlyMinutes = (clockOutISO: string, isAm: boolean): number => {
+    const block = shiftBlocks.find(b => b.sort_order === (isAm ? 0 : shiftBlocks.length - 1))
+    if (!block) return 0
+    const [eh, em] = block.end_time.split(':').map(Number)
+    const scheduledEnd = new Date(`${today}T${String(eh).padStart(2,'0')}:${String(em).padStart(2,'0')}:00`)
+    const diff = differenceInMinutes(scheduledEnd, parseISO(clockOutISO))
+    return Math.max(diff, 0)
   }
 
-  const handleClock = async () => {
-    if (saving) return
-    const action = getNextAction()
-    if (!action.type) return
+  // 次のアクションを判定
+  const getPhase = (): 'am_in' | 'am_out' | 'pm_in' | 'pm_out' | 'done' => {
+    if (!record || (!record.am_clock_in && !record.am_leave)) return 'am_in'
+    if (record.am_clock_in && !record.am_clock_out && hasAmShift && hasPmShift) return 'am_out'
+    if ((record.am_clock_out || record.am_leave) && !record.pm_clock_in && hasPmShift) return 'pm_in'
+    if (record.pm_clock_in && !record.pm_clock_out) return 'pm_out'
+    if (record.am_clock_in && !record.am_clock_out && !hasPmShift) return 'pm_out'
+    return 'done'
+  }
 
+  const phase = getPhase()
+
+  const handleClock = async (isEarlyLeave: boolean = false) => {
+    if (saving) return
     setSaving(true)
     const nowISO = new Date().toISOString()
 
-    if (!record) {
-      const { data } = await supabase.from('attendance_records').insert({
-        user_id: user!.id,
-        date: today,
-        am_clock_in: action.type === 'am_in' ? nowISO : null,
-        clock_in: action.type === 'am_in' ? nowISO : null,
-        status: 'present',
-        clock_out_reason: 'normal',
-        early_finish_status: 'not_required',
-      }).select().single()
-      setRecord(data)
-    } else {
+    if (phase === 'am_in') {
+      if (!record) {
+        const { data } = await supabase.from('attendance_records').insert({
+          user_id: user!.id,
+          date: today,
+          am_clock_in: nowISO,
+          clock_in: nowISO,
+          status: 'present',
+          clock_out_reason: 'normal',
+          early_finish_status: 'not_required',
+        }).select().single()
+        setRecord(data)
+      } else {
+        await supabase.from('attendance_records').update({
+          am_clock_in: nowISO, clock_in: nowISO
+        }).eq('id', record.id)
+        fetchRecord(today)
+      }
+    } else if (phase === 'am_out' || phase === 'pm_out') {
+      const isAm = phase === 'am_out'
       const update: any = {}
-      if (action.type === 'am_in') { update.am_clock_in = nowISO; update.clock_in = nowISO }
-      if (action.type === 'am_out') update.am_clock_out = nowISO
-      if (action.type === 'pm_in') update.pm_clock_in = nowISO
-      if (action.type === 'pm_out') { update.pm_clock_out = nowISO; update.clock_out = nowISO }
+
+      if (isEarlyLeave) {
+        // 早退
+        if (isAm) {
+          update.am_clock_out = nowISO
+        } else {
+          update.pm_clock_out = nowISO
+          update.clock_out = nowISO
+        }
+        update.status = 'early_leave'
+        update.clock_out_reason = 'early_leave'
+        update.early_finish_status = 'not_required'
+      } else {
+        // 退勤（早上がりフロー）
+        if (isAm) {
+          update.am_clock_out = nowISO
+        } else {
+          update.pm_clock_out = nowISO
+          update.clock_out = nowISO
+        }
+        update.clock_out_reason = 'normal'
+
+        // 早上がり判定
+        const earlyMin = calcEarlyMinutes(nowISO, isAm)
+        if (earlyMin >= 30) {
+          update.early_finish_status = 'pending'
+          update.status = 'present'
+        } else if (earlyMin > 0) {
+          // 30分未満 → 3日後自動承認（pending扱いだが短時間）
+          update.early_finish_status = 'pending'
+          update.status = 'present'
+        } else {
+          update.early_finish_status = 'not_required'
+          update.status = 'present'
+        }
+      }
+
       await supabase.from('attendance_records').update(update).eq('id', record.id)
       fetchRecord(today)
+    } else if (phase === 'pm_in') {
+      await supabase.from('attendance_records').update({
+        pm_clock_in: nowISO
+      }).eq('id', record.id)
+      fetchRecord(today)
     }
+
     setSaving(false)
   }
 
-  const formatTime = (iso: string | null) => {
+  const formatTimeStr = (iso: string | null) => {
     if (!iso) return '--:--'
     return format(new Date(iso), 'HH:mm')
   }
-
-  const nextAction = getNextAction()
 
   if (loading || !profile) return (
     <div className="min-h-screen flex items-center justify-center">
       <div className="text-4xl animate-pulse">🏥</div>
     </div>
   )
+
+  const isClockOut = phase === 'am_out' || phase === 'pm_out'
 
   return (
     <Layout>
@@ -142,12 +185,14 @@ const hasPmShift = shiftBlocks.length === 0 || shiftBlocks.some(b => b.sort_orde
           </p>
         </div>
 
+        {/* 現在時刻 */}
         <div className="card text-center py-6">
           <div className="text-5xl font-bold text-gray-800 tabular-nums">
             {format(now, 'HH:mm:ss')}
           </div>
         </div>
 
+        {/* シフト情報 */}
         {shiftBlocks.length > 0 && (
           <div className="card bg-clinic-50 border-clinic-100 space-y-1.5">
             <div className="text-xs font-medium text-clinic-700">本日のシフト</div>
@@ -162,42 +207,53 @@ const hasPmShift = shiftBlocks.length === 0 || shiftBlocks.some(b => b.sort_orde
           </div>
         )}
 
+        {/* 打刻状況 */}
         <div className="card space-y-3">
           <div className="text-sm font-medium text-gray-700">本日の打刻状況</div>
           <div className="grid grid-cols-2 gap-2">
             {[
               { label: '午前出勤', value: record?.am_clock_in, color: 'text-emerald-600' },
-              { label: '午前退勤', value: record?.am_clock_out, color: 'text-amber-600', leave: record?.am_leave },
-              { label: '午後出勤', value: record?.pm_clock_in, color: 'text-emerald-600', leave: record?.pm_leave },
-              { label: '午後退勤', value: record?.pm_clock_out, color: 'text-red-500', leave: record?.pm_leave },
+              { label: '午前退勤', value: record?.am_clock_out, color: 'text-amber-600' },
+              { label: '午後出勤', value: record?.pm_clock_in, color: 'text-emerald-600' },
+              { label: '午後退勤', value: record?.pm_clock_out, color: 'text-red-500' },
             ].map(item => (
               <div key={item.label} className="bg-gray-50 rounded-xl p-3 text-center">
                 <div className="text-xs text-gray-400 mb-1">{item.label}</div>
                 <div className={`text-base font-bold ${item.value ? item.color : 'text-gray-300'}`}>
-                  {item.leave ? '有給' : formatTime(item.value ?? null)}
+                  {formatTimeStr(item.value ?? null)}
                 </div>
               </div>
             ))}
           </div>
         </div>
 
-        <button
-          onClick={handleClock}
-          disabled={saving || !nextAction.type}
-          className={`w-full py-5 rounded-2xl text-white text-xl font-bold shadow-lg transition-all
-            ${nextAction.type ? `${nextAction.color} active:scale-95` : 'bg-gray-300'}`}
-        >
-          {saving ? '打刻中...' : nextAction.label}
-        </button>
-
-        {nextAction.type && (
-          <p className="text-xs text-center text-gray-400">
-            {nextAction.type === 'am_in' && '午前の勤務を開始します'}
-            {nextAction.type === 'am_out' && '午前の勤務を終了します（昼休み）'}
-            {nextAction.type === 'pm_in' && '午後の勤務を開始します'}
-            {nextAction.type === 'pm_out' && '本日の勤務を終了します'}
-          </p>
-        )}
+        {/* 打刻ボタン */}
+        {phase === 'done' ? (
+          <div className="card text-center py-4 text-clinic-600 font-medium">
+            本日の打刻は完了しています ✅
+          </div>
+        ) : phase === 'pm_in' ? (
+          <button onClick={() => handleClock(false)} disabled={saving}
+            className="w-full py-5 rounded-2xl text-white text-xl font-bold shadow-lg bg-emerald-500 active:scale-95 transition-all">
+            {saving ? '打刻中...' : '午後出勤'}
+          </button>
+        ) : phase === 'am_in' ? (
+          <button onClick={() => handleClock(false)} disabled={saving}
+            className="w-full py-5 rounded-2xl text-white text-xl font-bold shadow-lg bg-emerald-500 active:scale-95 transition-all">
+            {saving ? '打刻中...' : '出勤'}
+          </button>
+        ) : isClockOut ? (
+          <div className="space-y-3">
+            <button onClick={() => handleClock(false)} disabled={saving}
+              className="w-full py-4 rounded-2xl text-white text-lg font-bold shadow-lg bg-red-500 active:scale-95 transition-all">
+              {saving ? '打刻中...' : phase === 'am_out' ? '午前退勤' : '退勤'}
+            </button>
+            <button onClick={() => handleClock(true)} disabled={saving}
+              className="w-full py-4 rounded-2xl text-white text-lg font-bold shadow-lg bg-orange-400 active:scale-95 transition-all">
+              {saving ? '打刻中...' : phase === 'am_out' ? '午前早退' : '早退'}
+            </button>
+          </div>
+        ) : null}
       </div>
     </Layout>
   )
