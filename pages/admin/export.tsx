@@ -50,17 +50,21 @@ function calcScheduledMin(blocks: any[]): number {
 function calcLateMin(r: any, blocks: any[]): number {
   const sorted = [...blocks].sort((a: any, b: any) => a.sort_order - b.sort_order)
   let total = 0
+  // 早出（シフト開始より早い）は遅刻0
   const amBlock = sorted.find((b: any) => b.sort_order === 0)
-  if (amBlock && r.am_clock_in) {
+  const clockIn = r.am_clock_in || r.clock_in
+  if (amBlock && clockIn) {
     const [sh, sm] = amBlock.start_time.split(':').map(Number)
     const start = new Date(`${r.date}T${String(sh).padStart(2,'0')}:${String(sm).padStart(2,'0')}:00+09:00`)
-    total += Math.max(differenceInMinutes(parseISO(r.am_clock_in), start), 0)
+    const late = differenceInMinutes(parseISO(clockIn), start)
+    if (late > 0) total += late
   }
   const pmBlock = sorted.find((b: any) => b.sort_order === 1)
   if (pmBlock && r.pm_clock_in) {
     const [sh, sm] = pmBlock.start_time.split(':').map(Number)
     const start = new Date(`${r.date}T${String(sh).padStart(2,'0')}:${String(sm).padStart(2,'0')}:00+09:00`)
-    total += Math.max(differenceInMinutes(parseISO(r.pm_clock_in), start), 0)
+    const late = differenceInMinutes(parseISO(r.pm_clock_in), start)
+    if (late > 0) total += late
   }
   return total
 }
