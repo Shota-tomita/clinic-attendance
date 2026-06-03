@@ -28,7 +28,7 @@ export default function LeavePage() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [holidaySettings, setHolidaySettings] = useState<HolidaySettings>({
-    min_consecutive_days: 3, buffer_days: 2, closed_weekdays: [0, 4], include_holidays: true,
+    min_consecutive_days: 3, buffer_days: 2, closed_weekdays: [0], include_holidays: true,
   })
 
   // 通常有給フォーム
@@ -91,7 +91,7 @@ export default function LeavePage() {
     const endDate = parseISO(end)
     while (cur <= endDate) {
       const dow = cur.getDay()
-      if (![0, 4].includes(dow)) count++
+      if (dow !== 0) count++
       cur = addDays(cur, 1)
     }
     return count
