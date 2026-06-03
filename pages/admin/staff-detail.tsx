@@ -17,6 +17,15 @@ const ALLOWANCE_TYPE_LABELS: Record<string, string> = {
   custom: 'その他手当',
 }
 
+const RATE_TYPE_LABELS: Record<string, string> = {
+  weekday_am: '平日午前',
+  weekday_pm: '平日午後',
+  saturday: '土曜',
+  custom: '特定曜日',
+}
+
+const DOW_LABELS = ['日', '月', '火', '水', '木', '金', '土']
+
 export default function StaffDetailPage() {
   const { user, profile: myProfile, loading, isAdmin } = useAuth()
   const router = useRouter()
@@ -26,6 +35,7 @@ export default function StaffDetailPage() {
   const [departments, setDepartments] = useState<Department[]>([])
   const [allowances, setAllowances] = useState<Allowance[]>([])
   const [salaryHistory, setSalaryHistory] = useState<SalaryHistory[]>([])
+  const [partTimeRates, setPartTimeRates] = useState<any[]>([])
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [activeTab, setActiveTab] = useState<'basic' | 'salary' | 'transport' | 'leave'>('basic')
@@ -64,6 +74,15 @@ export default function StaffDetailPage() {
     change_reason: '',
   })
 
+  // 時給設定フォーム
+  const [showRateForm, setShowRateForm] = useState(false)
+  const [newRate, setNewRate] = useState({
+    rate_type: 'weekday_am',
+    day_of_week: 1,
+    time_slot: 'am',
+    hourly_rate: 0,
+  })
+
   useEffect(() => {
     if (!loading && !user) router.replace('/login')
   }, [user, loading])
@@ -78,6 +97,7 @@ export default function StaffDetailPage() {
       fetchDepts()
       fetchAllowances()
       fetchSalaryHistory()
+      fetchPartTimeRates()
     }
   }, [id, isAdmin])
 
@@ -124,6 +144,12 @@ export default function StaffDetailPage() {
     const { data } = await supabase.from('salary_history').select('*').eq('user_id', id)
       .order('effective_date', { ascending: false })
     setSalaryHistory(data ?? [])
+  }
+
+  const fetchPartTimeRates = async () => {
+    const { data } = await supabase.from('part_time_rates').select('*').eq('user_id', id)
+      .order('rate_type')
+    setPartTimeRates(data ?? [])
   }
 
   const handleSave = async () => {
@@ -184,6 +210,29 @@ export default function StaffDetailPage() {
     fetchSalaryHistory()
   }
 
+  const handleAddRate = async () => {
+    const payload: any = {
+      user_id: id,
+      rate_type: newRate.rate_type,
+      hourly_rate: Number(newRate.hourly_rate),
+    }
+    if (newRate.rate_type === 'custom') {
+      payload.day_of_week = newRate.day_of_week
+      payload.time_slot = newRate.time_slot
+    }
+    await supabase.from('part_time_rates').upsert(payload, {
+      onConflict: 'user_id,rate_type,day_of_week,time_slot'
+    })
+    setShowRateForm(false)
+    fetchPartTimeRates()
+  }
+
+  const handleDeleteRate = async (rateId: string) => {
+    if (!confirm('この時給設定を削除しますか？')) return
+    await supabase.from('part_time_rates').delete().eq('id', rateId)
+    fetchPartTimeRates()
+  }
+
   const totalAllowances = allowances.reduce((s, a) => s + a.amount, 0)
   const overtimeBase = form.base_salary + allowances.filter(a => a.include_in_overtime).reduce((s, a) => s + a.amount, 0)
   const monthlyTotal = form.base_salary + totalAllowances + form.commute_monthly_fee
@@ -194,6 +243,13 @@ export default function StaffDetailPage() {
   const nextGrantDays = monthsOfService !== null ? calcGrantDays(monthsOfService, form.weekly_scheduled_days) : null
 
   const f = (key: string, val: any) => setForm(prev => ({ ...prev, [key]: val }))
+
+  const getRateLabel = (r: any) => {
+    if (r.rate_type === 'custom') {
+      return `${DOW_LABELS[r.day_of_week]}曜${r.time_slot === 'am' ? '午前' : '午後'}`
+    }
+    return RATE_TYPE_LABELS[r.rate_type] ?? r.rate_type
+  }
 
   if (loading || !myProfile) return (
     <div className="min-h-screen flex items-center justify-center">
@@ -294,7 +350,7 @@ export default function StaffDetailPage() {
                     onChange={e => f('base_salary', Number(e.target.value))} /></div>
               )}
               {form.pay_type === 'hourly' && (
-                <div><label className="label">時給（円）</label>
+                <div><label className="label">基本時給（円）</label>
                   <input type="number" className="input" min={0} value={form.hourly_rate}
                     onChange={e => f('hourly_rate', Number(e.target.value))} /></div>
               )}
@@ -308,13 +364,11 @@ export default function StaffDetailPage() {
                   {saving ? '保存中...' : '保存'}
                 </button>
                 {form.pay_type === 'monthly' && (
-                  <button onClick={() => setShowSalaryForm(true)} className="btn-secondary text-sm px-4">
-                    昇給記録
-                  </button>
+                  <button onClick={() => setShowSalaryForm(true)} className="btn-secondary text-sm px-4">昇給記録</button>
                 )}
               </div>
 
-              {/* 月次概算 */}
+              {/* 月次概算（月給の場合） */}
               {form.pay_type === 'monthly' && (
                 <div className="bg-gray-50 rounded-xl p-3 space-y-1.5 text-sm">
                   <div className="font-medium text-gray-700 mb-2">月次支給概算</div>
@@ -331,7 +385,63 @@ export default function StaffDetailPage() {
               )}
             </div>
 
-            {/* 手当 */}
+            {/* 時給設定（時給制スタッフ） */}
+            {form.pay_type === 'hourly' && (
+              <div className="card space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="text-sm font-semibold text-gray-700">⏰ 時間帯別時給</h2>
+                    <p className="text-xs text-gray-400 mt-0.5">基本時給と異なる時間帯の時給を設定</p>
+                  </div>
+                  <button onClick={() => setShowRateForm(true)} className="btn-primary text-xs px-3 py-1.5">＋ 追加</button>
+                </div>
+
+                {partTimeRates.length === 0 ? (
+                  <p className="text-sm text-gray-400 text-center py-4">
+                    時間帯別設定なし（全て基本時給 ¥{form.hourly_rate.toLocaleString()}/h を適用）
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {partTimeRates.map(r => (
+                      <div key={r.id} className="flex items-center justify-between bg-gray-50 rounded-xl px-3 py-2.5">
+                        <div>
+                          <div className="text-sm font-medium text-gray-800">{getRateLabel(r)}</div>
+                          <div className="text-xs text-gray-400">{RATE_TYPE_LABELS[r.rate_type] ?? r.rate_type}</div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <span className="font-medium text-gray-700">¥{r.hourly_rate.toLocaleString()}/h</span>
+                          <button onClick={() => handleDeleteRate(r.id)} className="text-xs text-red-400 hover:text-red-600">削除</button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* 時給早見表 */}
+                {partTimeRates.length > 0 && (
+                  <div className="bg-blue-50 rounded-xl p-3 text-xs text-blue-700 space-y-1">
+                    <div className="font-medium">適用される時給</div>
+                    {['weekday_am','weekday_pm','saturday'].map(rt => {
+                      const rate = partTimeRates.find(r => r.rate_type === rt)
+                      return (
+                        <div key={rt} className="flex justify-between">
+                          <span>{RATE_TYPE_LABELS[rt]}</span>
+                          <span>¥{(rate?.hourly_rate ?? form.hourly_rate).toLocaleString()}/h</span>
+                        </div>
+                      )
+                    })}
+                    {partTimeRates.filter(r => r.rate_type === 'custom').map(r => (
+                      <div key={r.id} className="flex justify-between">
+                        <span>{getRateLabel(r)}</span>
+                        <span>¥{r.hourly_rate.toLocaleString()}/h</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 手当（月給の場合） */}
             {form.pay_type === 'monthly' && (
               <div className="card space-y-3">
                 <div className="flex items-center justify-between">
@@ -474,6 +584,55 @@ export default function StaffDetailPage() {
           </div>
         )}
       </div>
+
+      {/* 時給追加モーダル */}
+      {showRateForm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-6 space-y-4">
+            <h2 className="font-semibold text-gray-800">時間帯別時給を追加</h2>
+            <div>
+              <label className="label">区分</label>
+              <div className="grid grid-cols-2 gap-2">
+                {Object.entries(RATE_TYPE_LABELS).map(([v, l]) => (
+                  <button key={v} onClick={() => setNewRate(r => ({ ...r, rate_type: v }))}
+                    className={`py-2 rounded-xl text-sm font-medium border-2 transition-all
+                      ${newRate.rate_type === v ? 'border-clinic-500 bg-clinic-50 text-clinic-700' : 'border-gray-200 text-gray-500'}`}>
+                    {l}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {newRate.rate_type === 'custom' && (
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="label">曜日</label>
+                  <select className="select" value={newRate.day_of_week}
+                    onChange={e => setNewRate(r => ({ ...r, day_of_week: Number(e.target.value) }))}>
+                    {DOW_LABELS.map((l, i) => <option key={i} value={i}>{l}曜日</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="label">時間帯</label>
+                  <select className="select" value={newRate.time_slot}
+                    onChange={e => setNewRate(r => ({ ...r, time_slot: e.target.value }))}>
+                    <option value="am">午前</option>
+                    <option value="pm">午後</option>
+                  </select>
+                </div>
+              </div>
+            )}
+            <div>
+              <label className="label">時給（円）</label>
+              <input type="number" className="input" min={0} value={newRate.hourly_rate}
+                onChange={e => setNewRate(r => ({ ...r, hourly_rate: Number(e.target.value) }))} />
+            </div>
+            <div className="flex gap-3">
+              <button onClick={() => setShowRateForm(false)} className="btn-secondary flex-1">キャンセル</button>
+              <button onClick={handleAddRate} className="btn-primary flex-1">追加</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 手当追加モーダル */}
       {showAllowanceForm && (
