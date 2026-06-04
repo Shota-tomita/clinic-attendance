@@ -49,6 +49,8 @@ export default function StaffDetailPage() {
     hourly_rate: 0,
     daily_rate: 0,
     is_exempt_from_leave_limit: false,
+    commute_fee_type: 'monthly',
+    commute_per_trip_fee: 0,
     commute_type: 'train',
     commute_distance_km: '',
     commute_car_rate_type: 'legal',
@@ -76,6 +78,9 @@ export default function StaffDetailPage() {
 
   // 時給設定フォーム
   const [showRateForm, setShowRateForm] = useState(false)
+  const [supportFees, setSupportFees] = useState<any[]>([])
+  const [showSupportFeeForm, setShowSupportFeeForm] = useState(false)
+  const [newSupportFee, setNewSupportFee] = useState({ date: format(new Date(), 'yyyy-MM-dd'), amount: 0, note: '' })
   const [newRate, setNewRate] = useState({
     rate_type: 'weekday_am',
     day_of_week: 1,
@@ -98,6 +103,7 @@ export default function StaffDetailPage() {
       fetchAllowances()
       fetchSalaryHistory()
       fetchPartTimeRates()
+      fetchSupportFees()
     }
   }, [id, isAdmin])
 
@@ -116,7 +122,9 @@ export default function StaffDetailPage() {
         hourly_rate: (data as any).hourly_rate ?? 0,
         daily_rate: (data as any).daily_rate ?? 0,
         is_exempt_from_leave_limit: (data as any).is_exempt_from_leave_limit ?? false,
-        commute_type: data.commute_type ?? 'train',
+        commute_fee_type: (data as any).commute_fee_type ?? 'monthly',
+    commute_per_trip_fee: (data as any).commute_per_trip_fee ?? 0,
+    commute_type: data.commute_type ?? 'train',
         commute_distance_km: data.commute_distance_km ?? '',
         commute_car_rate_type: data.commute_car_rate_type ?? 'legal',
         commute_car_custom_rate: data.commute_car_custom_rate ?? '',
@@ -152,6 +160,31 @@ export default function StaffDetailPage() {
     setPartTimeRates(data ?? [])
   }
 
+  const fetchSupportFees = async () => {
+    const { data } = await supabase.from('support_transport_fees').select('*')
+      .eq('user_id', id).order('date', { ascending: false })
+    setSupportFees(data ?? [])
+  }
+
+  const handleAddSupportFee = async () => {
+    await supabase.from('support_transport_fees').insert({
+      user_id: id,
+      date: newSupportFee.date,
+      amount: newSupportFee.amount,
+      note: newSupportFee.note || null,
+      created_by: user?.id,
+    })
+    setShowSupportFeeForm(false)
+    setNewSupportFee({ date: format(new Date(), 'yyyy-MM-dd'), amount: 0, note: '' })
+    fetchSupportFees()
+  }
+
+  const handleDeleteSupportFee = async (feeId: string) => {
+    if (!confirm('この応援交通費を削除しますか？')) return
+    await supabase.from('support_transport_fees').delete().eq('id', feeId)
+    fetchSupportFees()
+  }
+
   const handleSave = async () => {
     if (!staff) return
     setSaving(true)
@@ -166,6 +199,8 @@ export default function StaffDetailPage() {
       hourly_rate: form.hourly_rate,
       daily_rate: form.daily_rate,
       is_exempt_from_leave_limit: form.is_exempt_from_leave_limit,
+      commute_fee_type: (form as any).commute_fee_type,
+      commute_per_trip_fee: (form as any).commute_per_trip_fee,
       commute_type: form.commute_type,
       commute_distance_km: form.commute_distance_km || null,
       commute_car_rate_type: form.commute_car_rate_type,
@@ -499,48 +534,109 @@ export default function StaffDetailPage() {
             <div className="card space-y-4">
               <h2 className="text-sm font-semibold text-gray-700">🚌 通勤交通費</h2>
               <div>
-                <label className="label">通勤手段</label>
-                <div className="grid grid-cols-4 gap-2">
-                  {(['train','car','bicycle','none'] as const).map(t => (
-                    <button key={t} onClick={() => f('commute_type', t)}
+                <label className="label">交通費計算方式</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {([
+                    ['monthly', '月額固定'],
+                    ['per_trip', '回数計算（円/回）'],
+                  ] as const).map(([v, l]) => (
+                    <button key={v} onClick={() => f('commute_fee_type', v)}
                       className={`py-2.5 rounded-xl text-sm font-medium border-2 transition-all
-                        ${form.commute_type === t ? 'border-clinic-500 bg-clinic-50 text-clinic-700' : 'border-gray-200 text-gray-500'}`}>
-                      {t === 'train' ? '🚃' : t === 'car' ? '🚗' : t === 'bicycle' ? '🚲' : '❌'}
-                      <div className="text-xs mt-0.5">{COMMUTE_LABELS[t]}</div>
+                        ${(form as any).commute_fee_type === v ? 'border-clinic-500 bg-clinic-50 text-clinic-700' : 'border-gray-200 text-gray-500'}`}>
+                      {l}
                     </button>
                   ))}
                 </div>
               </div>
-              {form.commute_type === 'train' && (
-                <div><label className="label">月額定期代（円）</label>
-                  <input type="number" className="input" min={0} value={form.commute_monthly_fee}
-                    onChange={e => f('commute_monthly_fee', Number(e.target.value))} /></div>
-              )}
-              {form.commute_type === 'car' && (
+              {(form as any).commute_fee_type === 'per_trip' ? (
                 <div className="space-y-3">
-                  <div><label className="label">片道距離（km）</label>
-                    <input type="number" className="input" min={0} step={0.1} value={form.commute_distance_km}
-                      onChange={e => f('commute_distance_km', e.target.value)} /></div>
+                  <div><label className="label">1回あたりの交通費（円）</label>
+                    <input type="number" className="input" min={0} value={(form as any).commute_per_trip_fee ?? 0}
+                      onChange={e => f('commute_per_trip_fee', Number(e.target.value))} />
+                    <p className="text-xs text-gray-400 mt-1">月次データ出力時に出勤日数×単価で自動計算されます</p>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-3">
                   <div>
-                    <label className="label">計算方法</label>
-                    <div className="grid grid-cols-2 gap-2">
-                      {(['legal','custom'] as const).map(t => (
-                        <button key={t} onClick={() => f('commute_car_rate_type', t)}
-                          className={`py-2 rounded-xl text-sm font-medium border-2 transition-all
-                            ${form.commute_car_rate_type === t ? 'border-clinic-500 bg-clinic-50 text-clinic-700' : 'border-gray-200 text-gray-500'}`}>
-                          {t === 'legal' ? '国税庁法定上限' : '独自単価（円/km）'}
+                    <label className="label">通勤手段</label>
+                    <div className="grid grid-cols-4 gap-2">
+                      {(['train','car','bicycle','none'] as const).map(t => (
+                        <button key={t} onClick={() => f('commute_type', t)}
+                          className={`py-2.5 rounded-xl text-sm font-medium border-2 transition-all
+                            ${form.commute_type === t ? 'border-clinic-500 bg-clinic-50 text-clinic-700' : 'border-gray-200 text-gray-500'}`}>
+                          {t === 'train' ? '🚃' : t === 'car' ? '🚗' : t === 'bicycle' ? '🚲' : '❌'}
+                          <div className="text-xs mt-0.5">{COMMUTE_LABELS[t]}</div>
                         </button>
                       ))}
                     </div>
                   </div>
-                  {form.commute_car_rate_type === 'custom' && (
-                    <div><label className="label">単価（円/km）</label>
-                      <input type="number" className="input" min={0} value={form.commute_car_custom_rate}
-                        onChange={e => f('commute_car_custom_rate', e.target.value)} /></div>
+                  {form.commute_type === 'train' && (
+                    <div><label className="label">月額定期代（円）</label>
+                      <input type="number" className="input" min={0} value={form.commute_monthly_fee}
+                        onChange={e => f('commute_monthly_fee', Number(e.target.value))} /></div>
+                  )}
+                  {form.commute_type === 'car' && (
+                    <div className="space-y-3">
+                      <div><label className="label">片道距離（km）</label>
+                        <input type="number" className="input" min={0} step={0.1} value={form.commute_distance_km}
+                          onChange={e => f('commute_distance_km', e.target.value)} /></div>
+                      <div>
+                        <label className="label">計算方法</label>
+                        <div className="grid grid-cols-2 gap-2">
+                          {(['legal','custom'] as const).map(t => (
+                            <button key={t} onClick={() => f('commute_car_rate_type', t)}
+                              className={`py-2 rounded-xl text-sm font-medium border-2 transition-all
+                                ${form.commute_car_rate_type === t ? 'border-clinic-500 bg-clinic-50 text-clinic-700' : 'border-gray-200 text-gray-500'}`}>
+                              {t === 'legal' ? '国税庁法定上限' : '独自単価（円/km）'}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      {form.commute_car_rate_type === 'custom' && (
+                        <div><label className="label">単価（円/km）</label>
+                          <input type="number" className="input" min={0} value={form.commute_car_custom_rate}
+                            onChange={e => f('commute_car_custom_rate', e.target.value)} /></div>
+                      )}
+                    </div>
                   )}
                 </div>
               )}
             </div>
+
+            {/* 応援交通費 */}
+            <div className="card space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-sm font-semibold text-gray-700">🚌 応援交通費</h2>
+                  <p className="text-xs text-gray-400 mt-0.5">他クリニックへの応援時の交通費を登録</p>
+                </div>
+                <button onClick={() => setShowSupportFeeForm(true)} className="btn-primary text-xs px-3 py-1.5">＋ 追加</button>
+              </div>
+              {supportFees.length === 0 ? (
+                <p className="text-sm text-gray-400 text-center py-3">応援交通費の記録がありません</p>
+              ) : (
+                <div className="space-y-2">
+                  {supportFees.map(fee => (
+                    <div key={fee.id} className="flex items-center justify-between bg-gray-50 rounded-xl px-3 py-2.5">
+                      <div>
+                        <div className="text-sm font-medium text-gray-800">{fee.date}</div>
+                        {fee.note && <div className="text-xs text-gray-400">{fee.note}</div>}
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="font-medium text-gray-700">¥{fee.amount.toLocaleString()}</span>
+                        <button onClick={() => handleDeleteSupportFee(fee.id)}
+                          className="text-xs text-red-400 hover:text-red-600">削除</button>
+                      </div>
+                    </div>
+                  ))}
+                  <div className="text-right text-sm font-medium text-clinic-700 pt-1">
+                    合計: ¥{supportFees.reduce((s, f) => s + f.amount, 0).toLocaleString()}
+                  </div>
+                </div>
+              )}
+            </div>
+
             <button onClick={handleSave} disabled={saving} className="btn-primary w-full">
               {saving ? '保存中...' : '保存する'}
             </button>
@@ -669,6 +765,35 @@ export default function StaffDetailPage() {
             <div className="flex gap-3">
               <button onClick={() => setShowAllowanceForm(false)} className="btn-secondary flex-1">キャンセル</button>
               <button onClick={handleAddAllowance} className="btn-primary flex-1">追加</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 応援交通費追加モーダル */}
+      {showSupportFeeForm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-6 space-y-4">
+            <h2 className="font-semibold text-gray-800">応援交通費を追加</h2>
+            <div>
+              <label className="label">日付</label>
+              <input type="date" className="input" value={newSupportFee.date}
+                onChange={e => setNewSupportFee(f => ({ ...f, date: e.target.value }))} />
+            </div>
+            <div>
+              <label className="label">金額（円）</label>
+              <input type="number" className="input" min={0} value={newSupportFee.amount}
+                onChange={e => setNewSupportFee(f => ({ ...f, amount: Number(e.target.value) }))} />
+            </div>
+            <div>
+              <label className="label">備考（任意）</label>
+              <input className="input" value={newSupportFee.note}
+                onChange={e => setNewSupportFee(f => ({ ...f, note: e.target.value }))}
+                placeholder="例: なんよう眼科応援" />
+            </div>
+            <div className="flex gap-3">
+              <button onClick={() => setShowSupportFeeForm(false)} className="btn-secondary flex-1">キャンセル</button>
+              <button onClick={handleAddSupportFee} className="btn-primary flex-1">追加</button>
             </div>
           </div>
         </div>
