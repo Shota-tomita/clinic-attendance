@@ -259,8 +259,14 @@ export default function AttendanceHistoryPage() {
     const lateMin = calcLateMin(r, blocks)
     // 残業 = 実働 - 所定（マイナスは0）
     const overtimeMin = scheduledMin > 0 ? Math.max(actualMin - scheduledMin, 0) : 0
-    // 控除 = 所定 - 実働（マイナスは0）遅刻・早退の有無に関わらず差分で計算
-    const deductionMin = scheduledMin > 0 ? Math.max(scheduledMin - actualMin, 0) : 0
+    // 控除計算：
+    // - 早上がり承認済み or 承認待ち（pending）→ 控除0（否認されたら控除発生）
+    // - 早退（early_leave）→ 所定-実働
+    // - 遅刻のみ → 所定-実働
+    // - 実働≥所定 → 控除0
+    const isEarlyFinishExempt = r.early_finish_status === 'approved' || r.early_finish_status === 'pending'
+    const diff = scheduledMin > 0 ? scheduledMin - actualMin : 0
+    const deductionMin = isEarlyFinishExempt ? 0 : Math.max(diff, 0)
     return { ...r, _scheduledMin: scheduledMin, _actualMin: actualMin, _lateMin: lateMin, _overtimeMin: overtimeMin, _deductionMin: deductionMin }
   })
 
@@ -368,8 +374,10 @@ export default function AttendanceHistoryPage() {
                   <tr><td colSpan={12} className="text-center py-8 text-gray-400">読込中...</td></tr>
                 ) : computedRecords.length === 0 ? (
                   <tr><td colSpan={12} className="text-center py-8 text-gray-400">この月の記録はありません</td></tr>
-                ) : computedRecords.map(r => (
-                  <tr key={r.id} className={`hover:bg-gray-50 ${r.early_finish_status === 'pending' ? 'bg-amber-50/40' : ''}`}>
+                ) : computedRecords.map(r => {
+                  const isShort = r._scheduledMin > 0 && r._actualMin < r._scheduledMin && ['present','late','early_leave'].includes(r.status)
+                  return (
+                  <tr key={r.id} className={`hover:bg-gray-50 ${r.early_finish_status === 'pending' ? 'bg-amber-50/40' : isShort ? 'bg-red-50/40' : ''}`}>
                     <td className="table-td font-medium whitespace-nowrap">
                       {format(parseISO(r.date), 'M/d(EEE)', { locale: ja })}
                     </td>
@@ -453,7 +461,8 @@ export default function AttendanceHistoryPage() {
                       )}
                     </td>
                   </tr>
-                ))}
+                )})
+                }
               </tbody>
             </table>
           </div>
