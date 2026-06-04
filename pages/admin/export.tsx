@@ -28,9 +28,13 @@ function calcActualMin(r: any, blocks: any[]): number {
     const [sh, sm] = pmBlock.start_time.split(':').map(Number)
     const shiftStart = new Date(`${r.date}T${String(sh).padStart(2,'0')}:${String(sm).padStart(2,'0')}:00+09:00`)
     if (rawPmIn < shiftStart) effectivePmIn = shiftStart
+  } else if (rawPmIn && !pmBlock && amBlock) {
+    const [sh, sm] = amBlock.start_time.split(':').map(Number)
+    const shiftStart = new Date(`${r.date}T${String(sh).padStart(2,'0')}:${String(sm).padStart(2,'0')}:00+09:00`)
+    if (rawPmIn < shiftStart) effectivePmIn = shiftStart
   }
   if (effectivePmIn && pmOut) total += Math.max(differenceInMinutes(pmOut, effectivePmIn), 0)
-  if (!rawPmIn && effectiveAmIn && pmOut) total = Math.max(differenceInMinutes(pmOut, effectiveAmIn), 0)
+  if (!rawPmIn && effectiveAmIn && pmOut && total === 0) total = Math.max(differenceInMinutes(pmOut, effectiveAmIn), 0)
   if (total === 0 && r.clock_in && r.clock_out)
     total = Math.max(differenceInMinutes(parseISO(r.clock_out), parseISO(r.clock_in)), 0)
   return total
@@ -64,8 +68,8 @@ function calcAmPmMin(r: any, blocks: any[]): { amMin: number, pmMin: number } {
   }
   if (effectivePmIn && pmOut) pmMin = Math.max(differenceInMinutes(pmOut, effectivePmIn), 0)
 
-  // 午後のみシフト（am→pm通し）
-  if (!rawPmIn && effectiveAmIn && pmOut) {
+  // am→pm通し（pm_clock_inがない旧形式）
+  if (!rawPmIn && effectiveAmIn && pmOut && pmMin === 0) {
     pmMin = Math.max(differenceInMinutes(pmOut, effectiveAmIn), 0)
     amMin = 0
   }
