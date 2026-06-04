@@ -50,11 +50,12 @@ function calcActualMin(r: any, shiftBlocks: any[], earlyStartTime?: string): num
 
   let effectivePmIn = rawPmIn
   if (rawPmIn && pmBlock) {
+    // 通常の午後ブロック：シフト開始より早い場合はシフト開始から
     const [sh, sm] = pmBlock.start_time.split(':').map(Number)
     const shiftPmStart = new Date(`${r.date}T${String(sh).padStart(2,'0')}:${String(sm).padStart(2,'0')}:00+09:00`)
     if (rawPmIn < shiftPmStart) effectivePmIn = shiftPmStart
   } else if (rawPmIn && !pmBlock && amBlock) {
-    // opeシフト（午後のみ）: amBlockの時間で判定
+    // ブロックが1つのみ（opeシフト等）: そのブロックの開始時間で判定
     const [sh, sm] = amBlock.start_time.split(':').map(Number)
     const shiftStart = new Date(`${r.date}T${String(sh).padStart(2,'0')}:${String(sm).padStart(2,'0')}:00+09:00`)
     if (rawPmIn < shiftStart) effectivePmIn = shiftStart
@@ -64,8 +65,8 @@ function calcActualMin(r: any, shiftBlocks: any[], earlyStartTime?: string): num
     total += Math.max(differenceInMinutes(pmOut, effectivePmIn), 0)
   }
 
-  // 午後のみシフト（ope等: am_inからpm_outまで）
-  if (!rawPmIn && effectiveAmIn && pmOut) {
+  // am_inからpm_outまでのフォールバック（pm_clock_inがない旧形式）
+  if (!rawPmIn && effectiveAmIn && pmOut && total === 0) {
     total = Math.max(differenceInMinutes(pmOut, effectiveAmIn), 0)
   }
 
