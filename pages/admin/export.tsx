@@ -143,7 +143,7 @@ export default function ExportPage() {
 
     const { data: staffList } = await supabase
       .from('profiles')
-      .select('id, name, employment_type, base_salary, hourly_rate, pay_type, commute_monthly_fee, departments(name)')
+      .select('id, name, employment_type, base_salary, hourly_rate, pay_type, commute_monthly_fee, commute_fee_type, commute_per_trip_fee, departments(name)')
       .order('name')
 
     const staffById: Record<string, any> = {}
@@ -165,6 +165,18 @@ export default function ExportPage() {
     for (const s of shifts ?? []) {
       const blocks = (s.shift_patterns as any)?.shift_pattern_blocks ?? []
       shiftMap[`${s.user_id}_${s.date}`] = blocks
+    }
+
+    // 応援交通費を取得
+    const { data: supportFees } = await supabase
+      .from('support_transport_fees')
+      .select('*')
+      .gte('date', start)
+      .lte('date', end)
+
+    const supportFeesByUser: Record<string, number> = {}
+    for (const f of supportFees ?? []) {
+      supportFeesByUser[f.user_id] = (supportFeesByUser[f.user_id] ?? 0) + f.amount
     }
 
     // 時給設定を取得
@@ -193,6 +205,9 @@ export default function ExportPage() {
           overtime_minutes: 0, deduction_minutes: 0,
           actual_minutes: 0, paid_leave_days: 0,
           transport_fee: staff.commute_monthly_fee ?? 0,
+          commute_fee_type: (staff as any).commute_fee_type ?? 'monthly',
+          commute_per_trip_fee: (staff as any).commute_per_trip_fee ?? 0,
+          support_transport_fee: supportFeesByUser[r.user_id] ?? 0,
           // 時給区分別
           weekday_am_min: 0, weekday_pm_min: 0,
           saturday_min: 0, custom_min: 0,
@@ -210,7 +225,13 @@ export default function ExportPage() {
       const netLate = Math.max(lateMin - overtimeMin, 0)
       const deductionMin = scheduledMin > 0 ? netLate : 0
 
-      if (['present','late','early_leave'].includes(r.status)) s.work_days++
+      if (['present','late','early_leave'].includes(r.status)) {
+        s.work_days++
+        // 回数計算の交通費を積算
+        if (s.commute_fee_type === 'per_trip') {
+          s.transport_fee += s.commute_per_trip_fee
+        }
+      }
       if (r.status === 'absent') s.absent_days++
       if (lateMin > 0) s.late_count++
       s.late_minutes += lateMin
@@ -270,6 +291,7 @@ export default function ExportPage() {
       '出勤日数', '欠勤日数', '有給取得日数',
       '遅刻回数', '遅刻時間', '早退回数',
       '実働時間', '残業時間', '控除時間', '交通費',
+      '応援交通費',
       '平日午前(時間)', '平日午前(金額)',
       '平日午後(時間)', '平日午後(金額)',
       '土曜(時間)', '土曜(金額)',
@@ -281,6 +303,7 @@ export default function ExportPage() {
       s.late_count, formatMinutes(s.late_minutes), s.early_leave_count,
       formatMinutes(s.actual_minutes), formatMinutes(s.overtime_minutes),
       formatMinutes(s.deduction_minutes), s.transport_fee,
+      s.support_transport_fee > 0 ? `¥${s.support_transport_fee.toLocaleString()}` : '—',
       s.pay_type === 'hourly' ? formatMinutes(s.weekday_am_min) : '—',
       s.pay_type === 'hourly' ? `¥${s.weekday_am_amount.toLocaleString()}` : '—',
       s.pay_type === 'hourly' ? formatMinutes(s.weekday_pm_min) : '—',
@@ -362,6 +385,7 @@ export default function ExportPage() {
                   <th className="table-th">残業</th>
                   <th className="table-th">控除</th>
                   <th className="table-th">交通費</th>
+                  <th className="table-th">応援交通費</th>
                   <th className="table-th">平日午前</th>
                   <th className="table-th">平日午後</th>
                   <th className="table-th">土曜</th>
@@ -369,9 +393,9 @@ export default function ExportPage() {
               </thead>
               <tbody className="divide-y divide-gray-50">
                 {fetching ? (
-                  <tr><td colSpan={14} className="text-center py-8 text-gray-400">読込中...</td></tr>
+                  <tr><td colSpan={15} className="text-center py-8 text-gray-400">読込中...</td></tr>
                 ) : sorted.length === 0 ? (
-                  <tr><td colSpan={14} className="text-center py-8 text-gray-400">データがありません</td></tr>
+                  <tr><td colSpan={15} className="text-center py-8 text-gray-400">データがありません</td></tr>
                 ) : sorted.map(s => (
                   <tr key={s.id} className="hover:bg-gray-50">
                     <td className="table-td font-medium">{s.name}</td>
@@ -400,6 +424,9 @@ export default function ExportPage() {
                     </td>
                     <td className="table-td text-clinic-700 font-medium">
                       {s.transport_fee > 0 ? `¥${s.transport_fee.toLocaleString()}` : '—'}
+                    </td>
+                    <td className="table-td text-clinic-700 font-medium">
+                      {s.support_transport_fee > 0 ? `¥${s.support_transport_fee.toLocaleString()}` : <span className="text-gray-300">—</span>}
                     </td>
                     <td className="table-td text-xs">
                       {s.pay_type === 'hourly' && s.weekday_am_min > 0 ? (
