@@ -102,6 +102,18 @@ function calcScheduledMinWithHalfLeave(r: any, shiftBlocks: any[]): number {
   return base
 }
 
+// シフト終了時刻より早く退勤したか判定
+function isEarlyFinish(r: any, shiftBlocks: any[]): boolean {
+  if (!shiftBlocks || shiftBlocks.length === 0) return false
+  const sorted = [...shiftBlocks].sort((a: any, b: any) => a.sort_order - b.sort_order)
+  const lastBlock = sorted[sorted.length - 1]
+  const [eh, em] = lastBlock.end_time.split(':').map(Number)
+  const scheduledEnd = new Date(`${r.date}T${String(eh).padStart(2,'0')}:${String(em).padStart(2,'0')}:00+09:00`)
+  const clockOut = r.pm_clock_out ? parseISO(r.pm_clock_out) : r.am_clock_out ? parseISO(r.am_clock_out) : r.clock_out ? parseISO(r.clock_out) : null
+  if (!clockOut) return false
+  return clockOut < scheduledEnd
+}
+
 // 遅刻分数計算（午前・午後それぞれの開始時間と比較）
 // シフト開始より早い場合は遅刻0
 function calcLateMin(r: any, shiftBlocks: any[]): number {
@@ -260,13 +272,16 @@ export default function AttendanceHistoryPage() {
     // 残業 = 実働 - 所定（マイナスは0）
     const overtimeMin = scheduledMin > 0 ? Math.max(actualMin - scheduledMin, 0) : 0
     // 控除計算：
-    // - 早上がり承認済み or 承認待ち（pending）→ 控除0（否認されたら控除発生）
-    // - 早退（early_leave）→ 所定-実働
-    // - 遅刻のみ → 所定-実働
+    // - 早上がり承認済み or 承認待ち（pending）→ 控除0
+    // - 早退（clock_out_reason=early_leave）→ 所定-実働
+    // - not_required でシフト終了より早く退勤 → 早上がり扱い（控除0）
+    // - 遅刻して実働<所定（定時退勤） → 控除あり
     // - 実働≥所定 → 控除0
     const isEarlyFinishExempt = r.early_finish_status === 'approved' || r.early_finish_status === 'pending'
+    const isEarlyLeave = r.clock_out_reason === 'early_leave' || r.status === 'early_leave'
+    const earlyFinishDetected = !isEarlyLeave && isEarlyFinish(r, blocks)
     const diff = scheduledMin > 0 ? scheduledMin - actualMin : 0
-    const deductionMin = isEarlyFinishExempt ? 0 : Math.max(diff, 0)
+    const deductionMin = (isEarlyFinishExempt || earlyFinishDetected) ? 0 : Math.max(diff, 0)
     return { ...r, _scheduledMin: scheduledMin, _actualMin: actualMin, _lateMin: lateMin, _overtimeMin: overtimeMin, _deductionMin: deductionMin }
   })
 
