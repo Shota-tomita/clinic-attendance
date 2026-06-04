@@ -253,12 +253,14 @@ export default function AttendanceHistoryPage() {
   // フロントエンドで計算
   const computedRecords = records.map(r => {
     const blocks = shiftMap[r.date] ?? []
+    const earlyStart = earlyStartMap[r.date]
     const scheduledMin = calcScheduledMinWithHalfLeave(r, blocks)
-    const actualMin = calcActualMin(r, blocks)
+    const actualMin = calcActualMin(r, blocks, earlyStart)
     const lateMin = calcLateMin(r, blocks)
+    // 残業 = 実働 - 所定（マイナスは0）
     const overtimeMin = scheduledMin > 0 ? Math.max(actualMin - scheduledMin, 0) : 0
-    const netLateDeduction = Math.max(lateMin - overtimeMin, 0)
-    const deductionMin = scheduledMin > 0 ? netLateDeduction : 0
+    // 控除 = 所定 - 実働（マイナスは0）遅刻・早退の有無に関わらず差分で計算
+    const deductionMin = scheduledMin > 0 ? Math.max(scheduledMin - actualMin, 0) : 0
     return { ...r, _scheduledMin: scheduledMin, _actualMin: actualMin, _lateMin: lateMin, _overtimeMin: overtimeMin, _deductionMin: deductionMin }
   })
 
