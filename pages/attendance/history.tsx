@@ -185,6 +185,24 @@ function calcLateMinDetail(r: any, shiftBlocks: any[]): { amLate: number, pmLate
   return { amLate, pmLate }
 }
 
+// 残業計算（シフト終了後の実働時間）
+function calcOvertimeMin(r: any, shiftBlocks: any[]): number {
+  if (!shiftBlocks || shiftBlocks.length === 0) return 0
+  const sorted = [...shiftBlocks].sort((a: any, b: any) => a.sort_order - b.sort_order)
+  const lastBlock = sorted[sorted.length - 1]
+  const [eh, em] = lastBlock.end_time.split(':').map(Number)
+  const shiftEnd = new Date(`${r.date}T${String(eh).padStart(2,'0')}:${String(em).padStart(2,'0')}:00+09:00`)
+
+  // 退勤時刻
+  const clockOut = r.pm_clock_out ? parseISO(r.pm_clock_out)
+    : r.am_clock_out ? parseISO(r.am_clock_out)
+    : r.clock_out ? parseISO(r.clock_out)
+    : null
+
+  if (!clockOut) return 0
+  return Math.max(differenceInMinutes(clockOut, shiftEnd), 0)
+}
+
 // 所定時間計算
 function calcScheduledMin(shiftBlocks: any[]): number {
   if (!shiftBlocks || shiftBlocks.length === 0) return 0
@@ -312,22 +330,18 @@ export default function AttendanceHistoryPage() {
     const actualMin = calcActualMin(r, blocks, earlyStart)
     const lateMin = calcLateMin(r, blocks)
     const { amLate, pmLate } = calcLateMinDetail(r, blocks)
-    // 残業 = 実働 - 所定（マイナスは0）
-    const overtimeMin = scheduledMin > 0 ? Math.max(actualMin - scheduledMin, 0) : 0
+    // 残業 = シフト終了後の実働時間
+    const overtimeMin = calcOvertimeMin(r, blocks)
     // 控除計算：
-    // - 早退（clock_out_reason=early_leave）→ 遅刻分＋早退分
-    // - 早上がり否認（early_finish_status=rejected）→ 遅刻分＋早上がり分
-    // - 早上がり承認済み・承認待ち・業務完了 → 遅刻分のみ（残業で相殺）
-    // - 遅刻なし → 控除0
+    // - 早上がり承認済み・承認待ち → 控除0（業務完了）
+    // - 早退・早上がり否認 → 所定-実働（マイナスは0）
+    // - それ以外 → 実働≥所定なら控除0、実働<所定なら差分が控除
     const isEarlyLeave = r.clock_out_reason === 'early_leave' || r.status === 'early_leave'
     const isEarlyFinishRejected = r.early_finish_status === 'rejected'
-    // 控除 = 遅刻分（残業で相殺可）
-    const lateDeduction = Math.max(lateMin - overtimeMin, 0)
-    // 早退 or 早上がり否認の場合は不足分も控除
-    const shortfallDeduction = (isEarlyLeave || isEarlyFinishRejected)
-      ? Math.max(scheduledMin - actualMin - lateDeduction, 0)
-      : 0
-    const deductionMin = lateDeduction + shortfallDeduction
+    const isEarlyFinishExempt = r.early_finish_status === 'approved' || r.early_finish_status === 'pending'
+    const deductionMin = isEarlyFinishExempt
+      ? 0
+      : Math.max(scheduledMin - actualMin, 0)
     return { ...r, _scheduledMin: scheduledMin, _actualMin: actualMin, _lateMin: lateMin, _amLate: amLate, _pmLate: pmLate, _overtimeMin: overtimeMin, _deductionMin: deductionMin }
   })
 
