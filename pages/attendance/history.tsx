@@ -115,33 +115,74 @@ function isEarlyFinish(r: any, shiftBlocks: any[]): boolean {
   return clockOut < scheduledEnd
 }
 
-// 遅刻分数計算（午前・午後それぞれの開始時間と比較）
-// シフト開始より早い場合は遅刻0
+// 遅刻分数計算（午前・午後それぞれ）
+// - シフト開始より早い場合は遅刻0
+// - 午後はローカルルール：午前退勤+60分 と シフト午後開始 の遅い方を基準にする
 function calcLateMin(r: any, shiftBlocks: any[]): number {
   if (!shiftBlocks || shiftBlocks.length === 0) return 0
   const sorted = [...shiftBlocks].sort((a: any, b: any) => a.sort_order - b.sort_order)
   let totalLate = 0
 
-  // 午前ブロック（sort_order=0）との比較
+  // 午前遅刻
   const amBlock = sorted.find((b: any) => b.sort_order === 0)
   const clockIn = r.am_clock_in || r.clock_in
   if (amBlock && clockIn) {
     const [sh, sm] = amBlock.start_time.split(':').map(Number)
     const scheduledStart = new Date(`${r.date}T${String(sh).padStart(2,'0')}:${String(sm).padStart(2,'0')}:00+09:00`)
     const late = differenceInMinutes(parseISO(clockIn), scheduledStart)
-    if (late > 0) totalLate += late // 早出（マイナス）は0扱い
+    if (late > 0) totalLate += late
   }
 
-  // 午後ブロック（sort_order=1）との比較
+  // 午後遅刻（ローカルルール：午前退勤+60分 vs シフト午後開始 の遅い方を基準）
   const pmBlock = sorted.find((b: any) => b.sort_order === 1)
   if (pmBlock && r.pm_clock_in) {
     const [sh, sm] = pmBlock.start_time.split(':').map(Number)
-    const scheduledStart = new Date(`${r.date}T${String(sh).padStart(2,'0')}:${String(sm).padStart(2,'0')}:00+09:00`)
-    const late = differenceInMinutes(parseISO(r.pm_clock_in), scheduledStart)
-    if (late > 0) totalLate += late // 早出（マイナス）は0扱い
+    const shiftPmStart = new Date(`${r.date}T${String(sh).padStart(2,'0')}:${String(sm).padStart(2,'0')}:00+09:00`)
+
+    // 午前退勤+60分を計算
+    const amOutTime = r.am_clock_out ? parseISO(r.am_clock_out) : null
+    const minPmStart = amOutTime
+      ? new Date(amOutTime.getTime() + 60 * 60 * 1000)
+      : shiftPmStart
+
+    // 基準時刻 = MAX(シフト午後開始, 午前退勤+60分)
+    const effectivePmStart = minPmStart > shiftPmStart ? minPmStart : shiftPmStart
+
+    const late = differenceInMinutes(parseISO(r.pm_clock_in), effectivePmStart)
+    if (late > 0) totalLate += late
   }
 
   return totalLate
+}
+
+// 午前・午後それぞれの遅刻分数を返す（表示用）
+function calcLateMinDetail(r: any, shiftBlocks: any[]): { amLate: number, pmLate: number } {
+  if (!shiftBlocks || shiftBlocks.length === 0) return { amLate: 0, pmLate: 0 }
+  const sorted = [...shiftBlocks].sort((a: any, b: any) => a.sort_order - b.sort_order)
+
+  let amLate = 0, pmLate = 0
+
+  const amBlock = sorted.find((b: any) => b.sort_order === 0)
+  const clockIn = r.am_clock_in || r.clock_in
+  if (amBlock && clockIn) {
+    const [sh, sm] = amBlock.start_time.split(':').map(Number)
+    const scheduledStart = new Date(`${r.date}T${String(sh).padStart(2,'0')}:${String(sm).padStart(2,'0')}:00+09:00`)
+    const late = differenceInMinutes(parseISO(clockIn), scheduledStart)
+    if (late > 0) amLate = late
+  }
+
+  const pmBlock = sorted.find((b: any) => b.sort_order === 1)
+  if (pmBlock && r.pm_clock_in) {
+    const [sh, sm] = pmBlock.start_time.split(':').map(Number)
+    const shiftPmStart = new Date(`${r.date}T${String(sh).padStart(2,'0')}:${String(sm).padStart(2,'0')}:00+09:00`)
+    const amOutTime = r.am_clock_out ? parseISO(r.am_clock_out) : null
+    const minPmStart = amOutTime ? new Date(amOutTime.getTime() + 60 * 60 * 1000) : shiftPmStart
+    const effectivePmStart = minPmStart > shiftPmStart ? minPmStart : shiftPmStart
+    const late = differenceInMinutes(parseISO(r.pm_clock_in), effectivePmStart)
+    if (late > 0) pmLate = late
+  }
+
+  return { amLate, pmLate }
 }
 
 // 所定時間計算
@@ -270,6 +311,7 @@ export default function AttendanceHistoryPage() {
     const scheduledMin = calcScheduledMinWithHalfLeave(r, blocks)
     const actualMin = calcActualMin(r, blocks, earlyStart)
     const lateMin = calcLateMin(r, blocks)
+    const { amLate, pmLate } = calcLateMinDetail(r, blocks)
     // 残業 = 実働 - 所定（マイナスは0）
     const overtimeMin = scheduledMin > 0 ? Math.max(actualMin - scheduledMin, 0) : 0
     // 控除計算：
@@ -283,7 +325,7 @@ export default function AttendanceHistoryPage() {
     const earlyFinishDetected = !isEarlyLeave && isEarlyFinish(r, blocks)
     const diff = scheduledMin > 0 ? scheduledMin - actualMin : 0
     const deductionMin = (isEarlyFinishExempt || earlyFinishDetected) ? 0 : Math.max(diff, 0)
-    return { ...r, _scheduledMin: scheduledMin, _actualMin: actualMin, _lateMin: lateMin, _overtimeMin: overtimeMin, _deductionMin: deductionMin }
+    return { ...r, _scheduledMin: scheduledMin, _actualMin: actualMin, _lateMin: lateMin, _amLate: amLate, _pmLate: pmLate, _overtimeMin: overtimeMin, _deductionMin: deductionMin }
   })
 
   // 月次集計
@@ -413,18 +455,23 @@ export default function AttendanceHistoryPage() {
                       })()}
                     </td>
                     <td className="table-td whitespace-nowrap">
-                      <span className={r._lateMin > 0 ? 'text-amber-600' : ''}>
+                      <span className={r._amLate > 0 ? 'text-amber-600' : ''}>
                         {r.am_clock_in ? format(parseISO(r.am_clock_in), 'HH:mm') : r.clock_in ? format(parseISO(r.clock_in), 'HH:mm') : '--:--'}
                       </span>
-                      {r._lateMin > 0 && (
-                        <div className="text-[10px] text-amber-600">+{formatMinutes(r._lateMin)}</div>
+                      {r._amLate > 0 && (
+                        <div className="text-[10px] text-amber-600">+{formatMinutes(r._amLate)}</div>
                       )}
                     </td>
                     <td className="table-td whitespace-nowrap text-gray-500">
                       {r.am_clock_out ? format(parseISO(r.am_clock_out), 'HH:mm') : '--:--'}
                     </td>
-                    <td className="table-td whitespace-nowrap text-gray-500">
-                      {r.pm_clock_in ? format(parseISO(r.pm_clock_in), 'HH:mm') : '--:--'}
+                    <td className="table-td whitespace-nowrap">
+                      <span className={r._pmLate > 0 ? 'text-amber-600' : 'text-gray-500'}>
+                        {r.pm_clock_in ? format(parseISO(r.pm_clock_in), 'HH:mm') : '--:--'}
+                      </span>
+                      {r._pmLate > 0 && (
+                        <div className="text-[10px] text-amber-600">+{formatMinutes(r._pmLate)}</div>
+                      )}
                     </td>
                     <td className="table-td whitespace-nowrap">
                       {r.pm_clock_out ? format(parseISO(r.pm_clock_out), 'HH:mm') : r.clock_out ? format(parseISO(r.clock_out), 'HH:mm') : '--:--'}
