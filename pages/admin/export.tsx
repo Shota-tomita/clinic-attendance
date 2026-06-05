@@ -418,7 +418,14 @@ export default function ExportPage() {
                   <tr><td colSpan={15} className="text-center py-8 text-gray-400">データがありません</td></tr>
                 ) : sorted.map(s => (
                   <tr key={s.id} className="hover:bg-gray-50">
-                    <td className="table-td font-medium">{s.name}</td>
+                    <td className="table-td font-medium">
+                      <button
+                        onClick={() => router.push(`/attendance/history?staffId=${s.id}&month=${month}`)}
+                        className="text-clinic-600 hover:text-clinic-700 hover:underline font-medium"
+                      >
+                        {s.name}
+                      </button>
+                    </td>
                     <td className="table-td text-xs text-gray-500">{s.department}</td>
                     <td className="table-td text-xs text-gray-500">
                       {s.employment_type === 'full_time' ? '正社員' : 'パート'}
