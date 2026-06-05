@@ -28,6 +28,7 @@ export default function AdminEarlyStartPage() {
   const [directForm, setDirectForm] = useState({
     user_id: '',
     date: format(new Date(), 'yyyy-MM-dd'),
+    time_slot: 'am' as 'am' | 'pm',
     start_time: '',
     reason: '',
   })
@@ -38,11 +39,7 @@ export default function AdminEarlyStartPage() {
   }, [user, loading, profile, isAdmin])
 
   useEffect(() => {
-    if (isAdmin) {
-      fetchRequests()
-      fetchStaffNames()
-      fetchStaffList()
-    }
+    if (isAdmin) { fetchRequests(); fetchStaffNames(); fetchStaffList() }
   }, [isAdmin])
 
   const fetchRequests = async () => {
@@ -99,15 +96,16 @@ export default function AdminEarlyStartPage() {
     await supabase.from('early_start_requests').upsert({
       user_id: directForm.user_id,
       date: directForm.date,
+      time_slot: directForm.time_slot,
       start_time: directForm.start_time,
       reason: directForm.reason || '院長による直接登録',
       status: 'approved',
       reviewed_by: user!.id,
       reviewed_at: new Date().toISOString(),
-    }, { onConflict: 'user_id,date' })
+    }, { onConflict: 'user_id,date,time_slot' })
     setSaving(false)
     setShowDirectForm(false)
-    setDirectForm({ user_id: '', date: format(new Date(), 'yyyy-MM-dd'), start_time: '', reason: '' })
+    setDirectForm({ user_id: '', date: format(new Date(), 'yyyy-MM-dd'), time_slot: 'am', start_time: '', reason: '' })
     fetchRequests()
   }
 
@@ -129,9 +127,7 @@ export default function AdminEarlyStartPage() {
             {pendingCount > 0 && <p className="text-xs text-amber-600 mt-0.5">⚠️ 審査待ち {pendingCount}件</p>}
           </div>
           <div className="flex gap-2">
-            <button onClick={() => setShowDirectForm(true)} className="btn-secondary text-sm">
-              ＋ 直接登録
-            </button>
+            <button onClick={() => setShowDirectForm(true)} className="btn-secondary text-sm">＋ 直接登録</button>
             {(['pending', 'all'] as const).map(f => (
               <button key={f} onClick={() => setFilter(f)}
                 className={`text-xs px-3 py-1.5 rounded-lg border font-medium transition-all
@@ -153,7 +149,11 @@ export default function AdminEarlyStartPage() {
                 <div>
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-medium text-gray-800">{staffNames[r.user_id] ?? '—'}</span>
-                    <span className="text-xs text-gray-400">{r.date} / {r.start_time?.slice(0,5)} 開始</span>
+                    <span className="text-xs text-gray-400">{r.date}</span>
+                    <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">
+                      {(r.time_slot ?? 'am') === 'am' ? '午前' : '午後'}
+                    </span>
+                    <span className="text-xs text-gray-400">{r.start_time?.slice(0,5)} 開始</span>
                   </div>
                   <div className="text-xs text-gray-400 mt-0.5">理由: {r.reason}</div>
                   {r.admin_note && <div className="text-xs text-blue-600 mt-0.5">コメント: {r.admin_note}</div>}
@@ -181,6 +181,7 @@ export default function AdminEarlyStartPage() {
               <div className="bg-gray-50 rounded-xl p-3 text-sm space-y-1.5">
                 <div><span className="text-gray-500">申請者:</span> {staffNames[req.user_id]}</div>
                 <div><span className="text-gray-500">日付:</span> {req.date}</div>
+                <div><span className="text-gray-500">時間帯:</span> {(req.time_slot ?? 'am') === 'am' ? '午前' : '午後'}</div>
                 <div><span className="text-gray-500">開始時刻:</span> {req.start_time?.slice(0,5)}</div>
                 <div><span className="text-gray-500">理由:</span> {req.reason}</div>
               </div>
@@ -221,10 +222,18 @@ export default function AdminEarlyStartPage() {
                   onChange={e => setDirectForm(f => ({ ...f, date: e.target.value }))} />
               </div>
               <div>
-                <label className="label">開始時刻</label>
-                <input type="time" className="input" value={directForm.start_time}
-                  onChange={e => setDirectForm(f => ({ ...f, start_time: e.target.value }))} />
+                <label className="label">時間帯</label>
+                <select className="select" value={directForm.time_slot}
+                  onChange={e => setDirectForm(f => ({ ...f, time_slot: e.target.value as 'am' | 'pm' }))}>
+                  <option value="am">午前</option>
+                  <option value="pm">午後</option>
+                </select>
               </div>
+            </div>
+            <div>
+              <label className="label">開始時刻</label>
+              <input type="time" className="input" value={directForm.start_time}
+                onChange={e => setDirectForm(f => ({ ...f, start_time: e.target.value }))} />
             </div>
             <div>
               <label className="label">理由（任意）</label>
@@ -234,7 +243,8 @@ export default function AdminEarlyStartPage() {
             </div>
             <div className="flex gap-3">
               <button onClick={() => setShowDirectForm(false)} className="btn-secondary flex-1">キャンセル</button>
-              <button onClick={handleDirectRegister} disabled={saving || !directForm.user_id || !directForm.start_time}
+              <button onClick={handleDirectRegister}
+                disabled={saving || !directForm.user_id || !directForm.start_time}
                 className="btn-primary flex-1">
                 {saving ? '登録中...' : '承認済みで登録'}
               </button>
