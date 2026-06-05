@@ -23,6 +23,7 @@ export default function EarlyStartPage() {
   const [error, setError] = useState('')
   const [form, setForm] = useState({
     date: format(new Date(), 'yyyy-MM-dd'),
+    time_slot: 'am' as 'am' | 'pm',
     start_time: '',
     reason: '',
   })
@@ -52,14 +53,15 @@ export default function EarlyStartPage() {
     const { error: err } = await supabase.from('early_start_requests').upsert({
       user_id: user!.id,
       date: form.date,
+      time_slot: form.time_slot,
       start_time: form.start_time,
       reason: form.reason,
       status: 'pending',
-    }, { onConflict: 'user_id,date' })
+    }, { onConflict: 'user_id,date,time_slot' })
     setSaving(false)
     if (err) { setError(err.message); return }
     setShowForm(false)
-    setForm({ date: format(new Date(), 'yyyy-MM-dd'), start_time: '', reason: '' })
+    setForm({ date: format(new Date(), 'yyyy-MM-dd'), time_slot: 'am', start_time: '', reason: '' })
     fetchRequests()
   }
 
@@ -89,7 +91,12 @@ export default function EarlyStartPage() {
             ) : requests.map(r => (
               <div key={r.id} className="px-4 py-3 flex items-start justify-between gap-3">
                 <div>
-                  <div className="text-sm font-medium text-gray-800">{r.date}</div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-gray-800">{r.date}</span>
+                    <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">
+                      {r.time_slot === 'am' ? '午前' : '午後'}
+                    </span>
+                  </div>
                   <div className="text-xs text-gray-500 mt-0.5">{r.start_time?.slice(0,5)} から業務開始</div>
                   <div className="text-xs text-gray-400 mt-0.5">理由: {r.reason}</div>
                   {r.admin_note && <div className="text-xs text-blue-600 mt-0.5">コメント: {r.admin_note}</div>}
@@ -105,17 +112,30 @@ export default function EarlyStartPage() {
         <div className="fixed inset-0 z-50 flex items-start justify-center p-4 bg-black/40 overflow-y-auto">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 space-y-4 my-8">
             <h2 className="font-semibold text-gray-800">早出申請</h2>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="label">日付</label>
-                <input type="date" className="input" value={form.date}
-                  onChange={e => setForm(f => ({ ...f, date: e.target.value }))} />
+            <div>
+              <label className="label">日付</label>
+              <input type="date" className="input" value={form.date}
+                onChange={e => setForm(f => ({ ...f, date: e.target.value }))} />
+            </div>
+            <div>
+              <label className="label">時間帯</label>
+              <div className="grid grid-cols-2 gap-2">
+                {(['am', 'pm'] as const).map(slot => (
+                  <button key={slot}
+                    onClick={() => setForm(f => ({ ...f, time_slot: slot }))}
+                    className={`py-2.5 rounded-xl text-sm font-medium border-2 transition-all
+                      ${form.time_slot === slot
+                        ? 'border-clinic-500 bg-clinic-50 text-clinic-700'
+                        : 'border-gray-200 text-gray-500'}`}>
+                    {slot === 'am' ? '午前' : '午後'}
+                  </button>
+                ))}
               </div>
-              <div>
-                <label className="label">業務開始時刻</label>
-                <input type="time" className="input" value={form.start_time}
-                  onChange={e => setForm(f => ({ ...f, start_time: e.target.value }))} />
-              </div>
+            </div>
+            <div>
+              <label className="label">業務開始時刻</label>
+              <input type="time" className="input" value={form.start_time}
+                onChange={e => setForm(f => ({ ...f, start_time: e.target.value }))} />
             </div>
             <div>
               <label className="label">理由 <span className="text-red-400">*</span></label>
