@@ -315,16 +315,19 @@ export default function AttendanceHistoryPage() {
     // 残業 = 実働 - 所定（マイナスは0）
     const overtimeMin = scheduledMin > 0 ? Math.max(actualMin - scheduledMin, 0) : 0
     // 控除計算：
-    // - 早上がり承認済み or 承認待ち（pending）→ 控除0
-    // - 早退（clock_out_reason=early_leave）→ 所定-実働
-    // - not_required でシフト終了より早く退勤 → 早上がり扱い（控除0）
-    // - 遅刻して実働<所定（定時退勤） → 控除あり
-    // - 実働≥所定 → 控除0
-    const isEarlyFinishExempt = r.early_finish_status === 'approved' || r.early_finish_status === 'pending'
+    // - 早退（clock_out_reason=early_leave）→ 遅刻分＋早退分
+    // - 早上がり否認（early_finish_status=rejected）→ 遅刻分＋早上がり分
+    // - 早上がり承認済み・承認待ち・業務完了 → 遅刻分のみ（残業で相殺）
+    // - 遅刻なし → 控除0
     const isEarlyLeave = r.clock_out_reason === 'early_leave' || r.status === 'early_leave'
-    const earlyFinishDetected = !isEarlyLeave && isEarlyFinish(r, blocks)
-    const diff = scheduledMin > 0 ? scheduledMin - actualMin : 0
-    const deductionMin = (isEarlyFinishExempt || earlyFinishDetected) ? 0 : Math.max(diff, 0)
+    const isEarlyFinishRejected = r.early_finish_status === 'rejected'
+    // 控除 = 遅刻分（残業で相殺可）
+    const lateDeduction = Math.max(lateMin - overtimeMin, 0)
+    // 早退 or 早上がり否認の場合は不足分も控除
+    const shortfallDeduction = (isEarlyLeave || isEarlyFinishRejected)
+      ? Math.max(scheduledMin - actualMin - lateDeduction, 0)
+      : 0
+    const deductionMin = lateDeduction + shortfallDeduction
     return { ...r, _scheduledMin: scheduledMin, _actualMin: actualMin, _lateMin: lateMin, _amLate: amLate, _pmLate: pmLate, _overtimeMin: overtimeMin, _deductionMin: deductionMin }
   })
 
