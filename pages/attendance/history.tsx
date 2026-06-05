@@ -12,7 +12,7 @@ import { format, addMonths, subMonths, parseISO, differenceInMinutes } from 'dat
 import { ja } from 'date-fns/locale'
 
 // 実働時間計算（シフト開始より早い分を除外・早出申請対応・中抜き対応）
-function calcActualMin(r: any, shiftBlocks: any[], earlyStartTime?: string): number {
+function calcActualMin(r: any, shiftBlocks: any[], amEarlyStartTime?: string, pmEarlyStartTime?: string): number {
   const sorted = [...shiftBlocks].sort((a: any, b: any) => a.sort_order - b.sort_order)
   const amBlock = sorted.find((b: any) => b.sort_order === 0)
   const pmBlock = sorted.find((b: any) => b.sort_order === 1)
@@ -27,14 +27,11 @@ function calcActualMin(r: any, shiftBlocks: any[], earlyStartTime?: string): num
   if (rawAmIn && amBlock) {
     const [sh, sm] = amBlock.start_time.split(':').map(Number)
     const shiftAmStart = new Date(`${r.date}T${String(sh).padStart(2,'0')}:${String(sm).padStart(2,'0')}:00+09:00`)
-
     if (rawAmIn < shiftAmStart) {
-      if (earlyStartTime) {
-        // 早出申請あり → 申請時刻から計算
-        const approvedStart = new Date(`${r.date}T${earlyStartTime}+09:00`)
+      if (amEarlyStartTime) {
+        const approvedStart = new Date(`${r.date}T${amEarlyStartTime}+09:00`)
         effectiveAmIn = rawAmIn < approvedStart ? approvedStart : rawAmIn
       } else {
-        // 早出申請なし → シフト開始から計算
         effectiveAmIn = shiftAmStart
       }
     }
@@ -50,12 +47,18 @@ function calcActualMin(r: any, shiftBlocks: any[], earlyStartTime?: string): num
 
   let effectivePmIn = rawPmIn
   if (rawPmIn && pmBlock) {
-    // 通常の午後ブロック：シフト開始より早い場合はシフト開始から
     const [sh, sm] = pmBlock.start_time.split(':').map(Number)
     const shiftPmStart = new Date(`${r.date}T${String(sh).padStart(2,'0')}:${String(sm).padStart(2,'0')}:00+09:00`)
-    if (rawPmIn < shiftPmStart) effectivePmIn = shiftPmStart
+    if (rawPmIn < shiftPmStart) {
+      if (pmEarlyStartTime) {
+        // 午後早出申請あり → 申請時刻から計算
+        const approvedPmStart = new Date(`${r.date}T${pmEarlyStartTime}+09:00`)
+        effectivePmIn = rawPmIn < approvedPmStart ? approvedPmStart : rawPmIn
+      } else {
+        effectivePmIn = shiftPmStart
+      }
+    }
   } else if (rawPmIn && !pmBlock && amBlock) {
-    // ブロックが1つのみ（opeシフト等）: そのブロックの開始時間で判定
     const [sh, sm] = amBlock.start_time.split(':').map(Number)
     const shiftStart = new Date(`${r.date}T${String(sh).padStart(2,'0')}:${String(sm).padStart(2,'0')}:00+09:00`)
     if (rawPmIn < shiftStart) effectivePmIn = shiftStart
@@ -65,12 +68,10 @@ function calcActualMin(r: any, shiftBlocks: any[], earlyStartTime?: string): num
     total += Math.max(differenceInMinutes(pmOut, effectivePmIn), 0)
   }
 
-  // am_inからpm_outまでのフォールバック（pm_clock_inがない旧形式）
   if (!rawPmIn && effectiveAmIn && pmOut && total === 0) {
     total = Math.max(differenceInMinutes(pmOut, effectiveAmIn), 0)
   }
 
-  // 旧形式フォールバック
   if (total === 0 && r.clock_in && r.clock_out) {
     total = Math.max(differenceInMinutes(parseISO(r.clock_out), parseISO(r.clock_in)), 0)
   }
@@ -219,7 +220,7 @@ export default function AttendanceHistoryPage() {
   const [month, setMonth] = useState(getCurrentMonth())
   const [records, setRecords] = useState<any[]>([])
   const [shiftMap, setShiftMap] = useState<Record<string, any[]>>({})
-  const [earlyStartMap, setEarlyStartMap] = useState<Record<string, string>>({}) // date -> approved start_time
+  const [earlyStartMap, setEarlyStartMap] = useState<Record<string, { am?: string, pm?: string }>>({}) // date -> {am, pm}
   const [staffList, setStaffList] = useState<Profile[]>([])
   const [selectedStaffId, setSelectedStaffId] = useState('')
   const [fetching, setFetching] = useState(false)
@@ -289,13 +290,17 @@ export default function AttendanceHistoryPage() {
     const { start, end } = getMonthRange(month)
     const { data } = await supabase
       .from('early_start_requests')
-      .select('date, start_time')
+      .select('date, start_time, time_slot')
       .eq('user_id', selectedStaffId)
       .eq('status', 'approved')
       .gte('date', start)
       .lte('date', end)
-    const map: Record<string, string> = {}
-    for (const d of data ?? []) map[d.date] = d.start_time
+    const map: Record<string, { am?: string, pm?: string }> = {}
+    for (const d of data ?? []) {
+      if (!map[d.date]) map[d.date] = {}
+      const slot = d.time_slot ?? 'am'
+      map[d.date][slot] = d.start_time
+    }
     setEarlyStartMap(map)
   }
 
@@ -339,9 +344,10 @@ export default function AttendanceHistoryPage() {
   // フロントエンドで計算
   const computedRecords = records.map(r => {
     const blocks = shiftMap[r.date] ?? []
-    const earlyStart = earlyStartMap[r.date]
+    const earlyStartAm = earlyStartMap[r.date]?.am
+    const earlyStartPm = earlyStartMap[r.date]?.pm
     const scheduledMin = calcScheduledMinWithHalfLeave(r, blocks)
-    const actualMin = calcActualMin(r, blocks, earlyStart)
+    const actualMin = calcActualMin(r, blocks, earlyStartAm, earlyStartPm)
     const lateMin = calcLateMin(r, blocks)
     const { amLate, pmLate } = calcLateMinDetail(r, blocks)
     // 残業 = 実働 - 所定（マイナスは0）
