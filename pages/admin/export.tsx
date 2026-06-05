@@ -77,6 +77,21 @@ function calcAmPmMin(r: any, blocks: any[]): { amMin: number, pmMin: number } {
   return { amMin, pmMin }
 }
 
+// 残業計算（シフト終了後の実働時間）
+function calcOvertimeMin(r: any, blocks: any[]): number {
+  if (!blocks || blocks.length === 0) return 0
+  const sorted = [...blocks].sort((a: any, b: any) => a.sort_order - b.sort_order)
+  const lastBlock = sorted[sorted.length - 1]
+  const [eh, em] = lastBlock.end_time.split(':').map(Number)
+  const shiftEnd = new Date(`${r.date}T${String(eh).padStart(2,'0')}:${String(em).padStart(2,'0')}:00+09:00`)
+  const clockOut = r.pm_clock_out ? parseISO(r.pm_clock_out)
+    : r.am_clock_out ? parseISO(r.am_clock_out)
+    : r.clock_out ? parseISO(r.clock_out)
+    : null
+  if (!clockOut) return 0
+  return Math.max(differenceInMinutes(clockOut, shiftEnd), 0)
+}
+
 function calcScheduledMin(blocks: any[]): number {
   return blocks.reduce((sum: number, b: any) => {
     const [sh, sm] = b.start_time.split(':').map(Number)
@@ -225,15 +240,10 @@ export default function ExportPage() {
       const scheduledMin = calcScheduledMin(blocks)
       const actualMin = calcActualMin(r, blocks)
       const lateMin = calcLateMin(r, blocks)
-      const overtimeMin = scheduledMin > 0 ? Math.max(actualMin - scheduledMin, 0) : 0
-      // 控除 = 遅刻分（残業で相殺）+ 早退/早上がり否認の不足分
-      const isEarlyLeave = r.clock_out_reason === 'early_leave' || r.status === 'early_leave'
-      const isEarlyFinishRejected = r.early_finish_status === 'rejected'
-      const lateDeduction = Math.max(lateMin - overtimeMin, 0)
-      const shortfallDeduction = (isEarlyLeave || isEarlyFinishRejected)
-        ? Math.max(scheduledMin - actualMin - lateDeduction, 0)
-        : 0
-      const deductionMin = lateDeduction + shortfallDeduction
+      const overtimeMin = calcOvertimeMin(r, blocks)
+      // 控除 = 所定-実働（マイナスは0）。早上がり承認済み・承認待ちは控除0
+      const isEarlyFinishExempt = r.early_finish_status === 'approved' || r.early_finish_status === 'pending'
+      const deductionMin = isEarlyFinishExempt ? 0 : Math.max(scheduledMin - actualMin, 0)
 
       if (['present','late','early_leave'].includes(r.status)) {
         s.work_days++
