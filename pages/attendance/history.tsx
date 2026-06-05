@@ -231,16 +231,23 @@ export default function AttendanceHistoryPage() {
 
   useEffect(() => {
     if (!user || !profile) return
+    // URLパラメータからmonthを取得
+    const { month: urlMonth } = router.query
+    if (urlMonth && typeof urlMonth === 'string') setMonth(urlMonth)
     if (isAdmin || isLeader) {
       fetchStaff()
-      // URLパラメータからstaffIdとmonthを取得
-      const { staffId, month: urlMonth } = router.query
-      if (urlMonth && typeof urlMonth === 'string') setMonth(urlMonth)
-      if (staffId && typeof staffId === 'string') setSelectedStaffId(staffId)
     } else {
       setSelectedStaffId(user.id)
     }
-  }, [user, profile, router.query])
+  }, [user, profile])
+
+  // URLパラメータのstaffIdを反映（fetchStaff完了後）
+  useEffect(() => {
+    const { staffId } = router.query
+    if (staffId && typeof staffId === 'string' && staffList.length > 0) {
+      setSelectedStaffId(staffId)
+    }
+  }, [router.query, staffList])
 
   useEffect(() => {
     if (selectedStaffId) {
@@ -340,13 +347,16 @@ export default function AttendanceHistoryPage() {
     // 残業 = シフト終了後の実働時間
     const overtimeMin = calcOvertimeMin(r, blocks)
     // 控除計算：
-    // - 早上がり承認済み・承認待ち → 控除0（業務完了）
-    // - 早退・早上がり否認 → 所定-実働（マイナスは0）
-    // - それ以外 → 実働≥所定なら控除0、実働<所定なら差分が控除
+    // - 早上がり承認済み・承認待ち → 控除0
+    // - 退勤時刻がシフト終了より早い（早上がり検出）→ 控除0
+    // - 早退（clock_out_reason=early_leave）→ 所定-実働
+    // - 早上がり否認 → 所定-実働
+    // - それ以外 → 所定-実働（マイナスは0）
     const isEarlyLeave = r.clock_out_reason === 'early_leave' || r.status === 'early_leave'
     const isEarlyFinishRejected = r.early_finish_status === 'rejected'
     const isEarlyFinishExempt = r.early_finish_status === 'approved' || r.early_finish_status === 'pending'
-    const deductionMin = isEarlyFinishExempt
+    const earlyFinishDetected = !isEarlyLeave && !isEarlyFinishRejected && isEarlyFinish(r, blocks)
+    const deductionMin = (isEarlyFinishExempt || earlyFinishDetected)
       ? 0
       : Math.max(scheduledMin - actualMin, 0)
     return { ...r, _scheduledMin: scheduledMin, _actualMin: actualMin, _lateMin: lateMin, _amLate: amLate, _pmLate: pmLate, _overtimeMin: overtimeMin, _deductionMin: deductionMin }
