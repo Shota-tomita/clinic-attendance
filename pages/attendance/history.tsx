@@ -231,9 +231,16 @@ export default function AttendanceHistoryPage() {
 
   useEffect(() => {
     if (!user || !profile) return
-    if (isAdmin || isLeader) fetchStaff()
-    else setSelectedStaffId(user.id)
-  }, [user, profile])
+    if (isAdmin || isLeader) {
+      fetchStaff()
+      // URLパラメータからstaffIdとmonthを取得
+      const { staffId, month: urlMonth } = router.query
+      if (urlMonth && typeof urlMonth === 'string') setMonth(urlMonth)
+      if (staffId && typeof staffId === 'string') setSelectedStaffId(staffId)
+    } else {
+      setSelectedStaffId(user.id)
+    }
+  }, [user, profile, router.query])
 
   useEffect(() => {
     if (selectedStaffId) {
