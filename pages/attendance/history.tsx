@@ -344,21 +344,20 @@ export default function AttendanceHistoryPage() {
     const actualMin = calcActualMin(r, blocks, earlyStart)
     const lateMin = calcLateMin(r, blocks)
     const { amLate, pmLate } = calcLateMinDetail(r, blocks)
-    // 残業 = シフト終了後の実働時間
-    const overtimeMin = calcOvertimeMin(r, blocks)
+    // 残業 = 実働 - 所定（マイナスは0）
+    const overtimeMin = scheduledMin > 0 ? Math.max(actualMin - scheduledMin, 0) : 0
     // 控除計算：
-    // - 早上がり承認済み・承認待ち → 控除0
-    // - 退勤時刻がシフト終了より早い（早上がり検出）→ 控除0
-    // - 早退（clock_out_reason=early_leave）→ 所定-実働
-    // - 早上がり否認 → 所定-実働
-    // - それ以外 → 所定-実働（マイナスは0）
+    // 1. 早退（early_leave）→ 所定-実働
+    // 2. 遅刻 かつ 所定>実働 → 所定-実働
+    // 3. 早上がり否認（rejected）→ 所定-実働
+    // 4. それ以外 → 控除0
     const isEarlyLeave = r.clock_out_reason === 'early_leave' || r.status === 'early_leave'
     const isEarlyFinishRejected = r.early_finish_status === 'rejected'
-    const isEarlyFinishExempt = r.early_finish_status === 'approved' || r.early_finish_status === 'pending'
-    const earlyFinishDetected = !isEarlyLeave && !isEarlyFinishRejected && isEarlyFinish(r, blocks)
-    const deductionMin = (isEarlyFinishExempt || earlyFinishDetected)
-      ? 0
-      : Math.max(scheduledMin - actualMin, 0)
+    const hasLate = lateMin > 0
+    const isShort = scheduledMin > 0 && actualMin < scheduledMin
+    const deductionMin = (isEarlyLeave || isEarlyFinishRejected || (hasLate && isShort))
+      ? Math.max(scheduledMin - actualMin, 0)
+      : 0
     return { ...r, _scheduledMin: scheduledMin, _actualMin: actualMin, _lateMin: lateMin, _amLate: amLate, _pmLate: pmLate, _overtimeMin: overtimeMin, _deductionMin: deductionMin }
   })
 
