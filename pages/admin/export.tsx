@@ -226,8 +226,14 @@ export default function ExportPage() {
       const actualMin = calcActualMin(r, blocks)
       const lateMin = calcLateMin(r, blocks)
       const overtimeMin = scheduledMin > 0 ? Math.max(actualMin - scheduledMin, 0) : 0
-      const netLate = Math.max(lateMin - overtimeMin, 0)
-      const deductionMin = scheduledMin > 0 ? netLate : 0
+      // 控除 = 遅刻分（残業で相殺）+ 早退/早上がり否認の不足分
+      const isEarlyLeave = r.clock_out_reason === 'early_leave' || r.status === 'early_leave'
+      const isEarlyFinishRejected = r.early_finish_status === 'rejected'
+      const lateDeduction = Math.max(lateMin - overtimeMin, 0)
+      const shortfallDeduction = (isEarlyLeave || isEarlyFinishRejected)
+        ? Math.max(scheduledMin - actualMin - lateDeduction, 0)
+        : 0
+      const deductionMin = lateDeduction + shortfallDeduction
 
       if (['present','late','early_leave'].includes(r.status)) {
         s.work_days++
