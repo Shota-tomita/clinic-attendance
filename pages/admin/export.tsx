@@ -240,23 +240,15 @@ export default function ExportPage() {
       const scheduledMin = calcScheduledMin(blocks)
       const actualMin = calcActualMin(r, blocks)
       const lateMin = calcLateMin(r, blocks)
-      const overtimeMin = calcOvertimeMin(r, blocks)
-      // 控除計算
+      const overtimeMin = scheduledMin > 0 ? Math.max(actualMin - scheduledMin, 0) : 0
+      // 控除計算：早退 or 早上がり否認 or (遅刻かつ所定>実働) のみ
       const isEarlyLeave = r.clock_out_reason === 'early_leave' || r.status === 'early_leave'
       const isEarlyFinishRejected = r.early_finish_status === 'rejected'
-      const isEarlyFinishExempt = r.early_finish_status === 'approved' || r.early_finish_status === 'pending'
-      const earlyFinishDetected = !isEarlyLeave && !isEarlyFinishRejected && (() => {
-        if (!blocks || blocks.length === 0) return false
-        const sorted = [...blocks].sort((a: any, b: any) => a.sort_order - b.sort_order)
-        const lastBlock = sorted[sorted.length - 1]
-        const [eh, em] = lastBlock.end_time.split(':').map(Number)
-        const shiftEnd = new Date(`${r.date}T${String(eh).padStart(2,'0')}:${String(em).padStart(2,'0')}:00+09:00`)
-        const clockOut = r.pm_clock_out ? parseISO(r.pm_clock_out) : r.am_clock_out ? parseISO(r.am_clock_out) : r.clock_out ? parseISO(r.clock_out) : null
-        return clockOut ? clockOut < shiftEnd : false
-      })()
-      const deductionMin = (isEarlyFinishExempt || earlyFinishDetected)
-        ? 0
-        : Math.max(scheduledMin - actualMin, 0)
+      const hasLate = lateMin > 0
+      const isShort = scheduledMin > 0 && actualMin < scheduledMin
+      const deductionMin = (isEarlyLeave || isEarlyFinishRejected || (hasLate && isShort))
+        ? Math.max(scheduledMin - actualMin, 0)
+        : 0
 
       if (['present','late','early_leave'].includes(r.status)) {
         s.work_days++
