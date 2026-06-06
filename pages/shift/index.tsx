@@ -16,7 +16,7 @@ const AUTO_PATTERN_MAP: Record<string, Record<number, string>> = {
     1: 'a1000001-0000-0000-0000-000000000001', // 月
     2: 'a1000001-0000-0000-0000-000000000001', // 火
     3: 'a1000001-0000-0000-0000-000000000002', // 水
-    5: 'a1000001-0000-0000-0000-000000000001', // 金
+    5: 'a1000001-0000-0000-0000-000000000005', // 金（別パターン）
     6: 'a1000001-0000-0000-0000-000000000003', // 土
   },
   '63aaa75e-18dc-41cd-81e5-34097b0131f5': { // ORT
@@ -34,6 +34,8 @@ export default function ShiftPage() {
 
   const [month, setMonth] = useState(getCurrentMonth())
   const [staffList, setStaffList] = useState<Profile[]>([])
+  const [sortKey, setSortKey] = useState<'department' | 'name' | 'employment'>('department')
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
   const [patterns, setPatterns] = useState<ShiftPattern[]>([])
   const [assignments, setAssignments] = useState<ShiftAssignment[]>([])
   const [fetching, setFetching] = useState(false)
@@ -107,7 +109,6 @@ export default function ShiftPage() {
     const staff = staffList.find(s => s.id === userId)
     const deptId = staff?.department_id ?? undefined
 
-    // 曜日自動パターンを取得
     let defaultPatternId = ''
     if (deptId && AUTO_PATTERN_MAP[deptId]) {
       defaultPatternId = AUTO_PATTERN_MAP[deptId][dow] ?? ''
@@ -118,7 +119,6 @@ export default function ShiftPage() {
     setModalNote(existing?.note ?? '')
   }
 
-  // 対象スタッフの部署に対応するパターンのみ返す
   const getFilteredPatterns = (deptId?: string) => {
     if (!deptId) return patterns
     return patterns.filter(p => (p as any).department_id === deptId || !(p as any).department_id)
@@ -151,7 +151,6 @@ export default function ShiftPage() {
     fetchAssignments()
   }
 
-  // 月一括自動設定（看護師・ORT）
   const handleAutoFill = async (userId: string, deptId: string) => {
     if (!AUTO_PATTERN_MAP[deptId]) return
     const patternMap = AUTO_PATTERN_MAP[deptId]
@@ -172,6 +171,16 @@ export default function ShiftPage() {
     }
     fetchAssignments()
   }
+
+  const sortedStaffList = [...staffList].sort((a, b) => {
+    let valA: any, valB: any
+    if (sortKey === 'name') { valA = a.name; valB = b.name }
+    else if (sortKey === 'department') { valA = (a as any).departments?.name ?? ''; valB = (b as any).departments?.name ?? '' }
+    else if (sortKey === 'employment') { valA = a.employment_type; valB = b.employment_type }
+    if (valA < valB) return sortOrder === 'asc' ? -1 : 1
+    if (valA > valB) return sortOrder === 'asc' ? 1 : -1
+    return 0
+  })
 
   const prevMonth = () => setMonth(format(subMonths(parseISO(month + '-01'), 1), 'yyyy-MM'))
   const nextMonth = () => setMonth(format(addMonths(parseISO(month + '-01'), 1), 'yyyy-MM'))
@@ -207,6 +216,28 @@ export default function ShiftPage() {
           <button onClick={nextMonth} className="btn-secondary px-3 py-1.5 text-sm">›</button>
         </div>
 
+        {/* ソートUI */}
+        <div className="flex gap-2 items-center flex-wrap">
+          <span className="text-xs text-gray-500 font-medium">並び替え：</span>
+          {([
+            ['department', '部署'],
+            ['name', '名前'],
+            ['employment', '雇用形態'],
+          ] as const).map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => {
+                if (sortKey === key) setSortOrder(o => o === 'asc' ? 'desc' : 'asc')
+                else { setSortKey(key); setSortOrder('asc') }
+              }}
+              className={`text-xs px-3 py-1.5 rounded-lg border font-medium transition-all
+                ${sortKey === key ? 'bg-clinic-600 text-white border-clinic-600' : 'bg-white text-gray-600 border-gray-200 hover:border-clinic-400'}`}
+            >
+              {label} {sortKey === key ? (sortOrder === 'asc' ? '↑' : '↓') : ''}
+            </button>
+          ))}
+        </div>
+
         {/* Legend */}
         <div className="flex gap-2 flex-wrap">
           {patterns.map(p => (
@@ -221,7 +252,7 @@ export default function ShiftPage() {
         <div className="card p-0 overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-xs min-w-max">
-              <thead className="bg-gray-50 border-b border-gray-100">
+              <thead className="bg-gray-50 border-b border-gray-100 sticky top-0 z-20">
                 <tr>
                   <th className="sticky left-0 z-10 bg-gray-50 px-3 py-2 text-left font-medium text-gray-600 min-w-[120px]">
                     スタッフ
@@ -244,9 +275,9 @@ export default function ShiftPage() {
               <tbody className="divide-y divide-gray-50">
                 {fetching ? (
                   <tr><td colSpan={days.length + 1} className="text-center py-8 text-gray-400">読込中...</td></tr>
-                ) : staffList.length === 0 ? (
+                ) : sortedStaffList.length === 0 ? (
                   <tr><td colSpan={days.length + 1} className="text-center py-8 text-gray-400">スタッフがいません</td></tr>
-                ) : staffList.map(staff => {
+                ) : sortedStaffList.map(staff => {
                   const deptId = staff.department_id ?? ''
                   const hasAutoPattern = !!AUTO_PATTERN_MAP[deptId]
                   return (
@@ -275,7 +306,7 @@ export default function ShiftPage() {
                         const pat = a?.shift_patterns
                         const dow = getDay(d)
                         const isWeekend = dow === 0 || dow === 6
-                        const isClosed = dow === 0 // 日曜のみ休診
+                        const isClosed = dow === 0
                         return (
                           <td
                             key={dateStr}
