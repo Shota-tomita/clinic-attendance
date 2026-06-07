@@ -7,27 +7,43 @@ import { getCurrentMonth, getMonthRange, formatMinutes } from '@/lib/utils'
 import { format, parseISO, differenceInMinutes, getDay } from 'date-fns'
 import { ja } from 'date-fns/locale'
 
-function calcActualMin(r: any, blocks: any[]): number {
+function calcActualMin(r: any, blocks: any[], amEarlyStartTime?: string, pmEarlyStartTime?: string): number {
   const sorted = [...blocks].sort((a: any, b: any) => a.sort_order - b.sort_order)
   const amBlock = sorted.find((b: any) => b.sort_order === 0)
   const pmBlock = sorted.find((b: any) => b.sort_order === 1)
   let total = 0
+
   const rawAmIn = r.am_clock_in ? parseISO(r.am_clock_in) : null
   const amOut = r.am_clock_out ? parseISO(r.am_clock_out) : null
   let effectiveAmIn = rawAmIn
   if (rawAmIn && amBlock) {
     const [sh, sm] = amBlock.start_time.split(':').map(Number)
-    const shiftStart = new Date(`${r.date}T${String(sh).padStart(2,'0')}:${String(sm).padStart(2,'0')}:00+09:00`)
-    if (rawAmIn < shiftStart) effectiveAmIn = shiftStart
+    const shiftAmStart = new Date(`${r.date}T${String(sh).padStart(2,'0')}:${String(sm).padStart(2,'0')}:00+09:00`)
+    if (rawAmIn < shiftAmStart) {
+      if (amEarlyStartTime) {
+        const approvedStart = new Date(`${r.date}T${amEarlyStartTime}+09:00`)
+        effectiveAmIn = rawAmIn < approvedStart ? approvedStart : rawAmIn
+      } else {
+        effectiveAmIn = shiftAmStart
+      }
+    }
   }
   if (effectiveAmIn && amOut) total += Math.max(differenceInMinutes(amOut, effectiveAmIn), 0)
+
   const rawPmIn = r.pm_clock_in ? parseISO(r.pm_clock_in) : null
   const pmOut = r.pm_clock_out ? parseISO(r.pm_clock_out) : null
   let effectivePmIn = rawPmIn
   if (rawPmIn && pmBlock) {
     const [sh, sm] = pmBlock.start_time.split(':').map(Number)
-    const shiftStart = new Date(`${r.date}T${String(sh).padStart(2,'0')}:${String(sm).padStart(2,'0')}:00+09:00`)
-    if (rawPmIn < shiftStart) effectivePmIn = shiftStart
+    const shiftPmStart = new Date(`${r.date}T${String(sh).padStart(2,'0')}:${String(sm).padStart(2,'0')}:00+09:00`)
+    if (rawPmIn < shiftPmStart) {
+      if (pmEarlyStartTime) {
+        const approvedPmStart = new Date(`${r.date}T${pmEarlyStartTime}+09:00`)
+        effectivePmIn = rawPmIn < approvedPmStart ? approvedPmStart : rawPmIn
+      } else {
+        effectivePmIn = shiftPmStart
+      }
+    }
   } else if (rawPmIn && !pmBlock && amBlock) {
     const [sh, sm] = amBlock.start_time.split(':').map(Number)
     const shiftStart = new Date(`${r.date}T${String(sh).padStart(2,'0')}:${String(sm).padStart(2,'0')}:00+09:00`)
@@ -40,12 +56,11 @@ function calcActualMin(r: any, blocks: any[]): number {
   return total
 }
 
-// 午前・午後それぞれの実働時間を返す
-function calcAmPmMin(r: any, blocks: any[]): { amMin: number, pmMin: number } {
+// 午前・午後それぞれの実働時間を返す（早出申請対応）
+function calcAmPmMin(r: any, blocks: any[], amEarlyStartTime?: string, pmEarlyStartTime?: string): { amMin: number, pmMin: number } {
   const sorted = [...blocks].sort((a: any, b: any) => a.sort_order - b.sort_order)
   const amBlock = sorted.find((b: any) => b.sort_order === 0)
   const pmBlock = sorted.find((b: any) => b.sort_order === 1)
-
   let amMin = 0, pmMin = 0
 
   const rawAmIn = r.am_clock_in ? parseISO(r.am_clock_in) : null
@@ -53,8 +68,15 @@ function calcAmPmMin(r: any, blocks: any[]): { amMin: number, pmMin: number } {
   let effectiveAmIn = rawAmIn
   if (rawAmIn && amBlock) {
     const [sh, sm] = amBlock.start_time.split(':').map(Number)
-    const shiftStart = new Date(`${r.date}T${String(sh).padStart(2,'0')}:${String(sm).padStart(2,'0')}:00+09:00`)
-    if (rawAmIn < shiftStart) effectiveAmIn = shiftStart
+    const shiftAmStart = new Date(`${r.date}T${String(sh).padStart(2,'0')}:${String(sm).padStart(2,'0')}:00+09:00`)
+    if (rawAmIn < shiftAmStart) {
+      if (amEarlyStartTime) {
+        const approvedStart = new Date(`${r.date}T${amEarlyStartTime}+09:00`)
+        effectiveAmIn = rawAmIn < approvedStart ? approvedStart : rawAmIn
+      } else {
+        effectiveAmIn = shiftAmStart
+      }
+    }
   }
   if (effectiveAmIn && amOut) amMin = Math.max(differenceInMinutes(amOut, effectiveAmIn), 0)
 
@@ -63,17 +85,21 @@ function calcAmPmMin(r: any, blocks: any[]): { amMin: number, pmMin: number } {
   let effectivePmIn = rawPmIn
   if (rawPmIn && pmBlock) {
     const [sh, sm] = pmBlock.start_time.split(':').map(Number)
-    const shiftStart = new Date(`${r.date}T${String(sh).padStart(2,'0')}:${String(sm).padStart(2,'0')}:00+09:00`)
-    if (rawPmIn < shiftStart) effectivePmIn = shiftStart
+    const shiftPmStart = new Date(`${r.date}T${String(sh).padStart(2,'0')}:${String(sm).padStart(2,'0')}:00+09:00`)
+    if (rawPmIn < shiftPmStart) {
+      if (pmEarlyStartTime) {
+        const approvedPmStart = new Date(`${r.date}T${pmEarlyStartTime}+09:00`)
+        effectivePmIn = rawPmIn < approvedPmStart ? approvedPmStart : rawPmIn
+      } else {
+        effectivePmIn = shiftPmStart
+      }
+    }
   }
   if (effectivePmIn && pmOut) pmMin = Math.max(differenceInMinutes(pmOut, effectivePmIn), 0)
-
-  // am→pm通し（pm_clock_inがない旧形式）
   if (!rawPmIn && effectiveAmIn && pmOut && pmMin === 0) {
     pmMin = Math.max(differenceInMinutes(pmOut, effectiveAmIn), 0)
     amMin = 0
   }
-
   return { amMin, pmMin }
 }
 
@@ -206,6 +232,22 @@ export default function ExportPage() {
       supportFeesByUser[f.user_id] = (supportFeesByUser[f.user_id] ?? 0) + f.amount
     }
 
+    // 承認済み早出申請を取得 → earlyStartMap[userId_date] = {am?, pm?}
+    const { data: earlyStarts } = await supabase
+      .from('early_start_requests')
+      .select('user_id, date, time_slot, start_time')
+      .eq('status', 'approved')
+      .gte('date', start)
+      .lte('date', end)
+
+    const earlyStartMap: Record<string, { am?: string; pm?: string }> = {}
+    for (const e of earlyStarts ?? []) {
+      const key = `${e.user_id}_${e.date}`
+      if (!earlyStartMap[key]) earlyStartMap[key] = {}
+      const slot = e.time_slot ?? 'am'
+      earlyStartMap[key][slot as 'am' | 'pm'] = e.start_time
+    }
+
     // 時給設定を取得
     const { data: allRates } = await supabase.from('part_time_rates').select('*')
     const ratesByUser: Record<string, any[]> = {}
@@ -246,8 +288,11 @@ export default function ExportPage() {
 
       const s = staffMap[r.user_id]
       const blocks = shiftMap[`${r.user_id}_${r.date}`] ?? []
+      const earlyKey = `${r.user_id}_${r.date}`
+      const amEarly = earlyStartMap[earlyKey]?.am
+      const pmEarly = earlyStartMap[earlyKey]?.pm
       const scheduledMin = calcScheduledMin(blocks)
-      const actualMin = calcActualMin(r, blocks)
+      const actualMin = calcActualMin(r, blocks, amEarly, pmEarly)
       const lateMin = calcLateMin(r, blocks)
       const overtimeMin = scheduledMin > 0 ? Math.max(actualMin - scheduledMin, 0) : 0
       // 控除計算：早退 or 早上がり否認 or (遅刻かつ所定>実働) のみ
@@ -341,7 +386,7 @@ export default function ExportPage() {
       if (s.pay_type === 'hourly') {
         const rates = ratesByUser[r.user_id] ?? []
         const dow = getDay(parseISO(r.date)) // 0=日,6=土
-        const { amMin, pmMin } = calcAmPmMin(r, blocks)
+        const { amMin, pmMin } = calcAmPmMin(r, blocks, amEarly, pmEarly)
         const isSat = dow === 6
 
         // 午前
