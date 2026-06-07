@@ -225,6 +225,28 @@ type AdminEditForm = {
   note: string
 }
 
+// ─── 部署固定順ソート ─────────────────────────────────────────
+const DEPT_ORDER = ['看護師', 'ORT', '受付', '助手']
+
+function getDeptOrder(deptName: string | undefined | null): number {
+  const idx = DEPT_ORDER.indexOf(deptName ?? '')
+  return idx === -1 ? DEPT_ORDER.length : idx  // 未定義部署は末尾
+}
+
+function sortByDeptThenEmployment<T extends { employment_type?: string; name?: string; departments?: any }>(list: T[]): T[] {
+  return [...list].sort((a, b) => {
+    const deptA = getDeptOrder((a.departments as any)?.name)
+    const deptB = getDeptOrder((b.departments as any)?.name)
+    if (deptA !== deptB) return deptA - deptB
+    // 部署内：常勤 → パート
+    const empA = a.employment_type === 'full_time' ? 0 : 1
+    const empB = b.employment_type === 'full_time' ? 0 : 1
+    if (empA !== empB) return empA - empB
+    // 同雇用形態：五十音順
+    return (a.name ?? '').localeCompare(b.name ?? '', 'ja')
+  })
+}
+
 export default function AttendanceHistoryPage() {
   const { user, profile, loading, isAdmin, isLeader } = useAuth()
   const router = useRouter()
@@ -279,14 +301,15 @@ export default function AttendanceHistoryPage() {
   }, [selectedStaffId, month])
 
   const fetchStaff = async () => {
-    let q = supabase.from('profiles').select('*').order('name')
+    let q = supabase.from('profiles').select('*, departments(name)').order('name')
     if (isLeader && !isAdmin && profile?.department_id) {
       q = q.eq('department_id', profile.department_id)
     }
     const { data } = await q
-    setStaffList(data ?? [])
-    if (data && !selectedStaffId) {
-      setSelectedStaffId(user?.id ?? data[0]?.id ?? '')
+    const sorted = sortByDeptThenEmployment(data ?? [])
+    setStaffList(sorted)
+    if (sorted.length > 0 && !selectedStaffId) {
+      setSelectedStaffId(user?.id ?? sorted[0]?.id ?? '')
     }
   }
 
@@ -575,7 +598,7 @@ export default function AttendanceHistoryPage() {
       .reduce((s, r) => s + calcPaidLeaveAmount(r, shiftMap[r.date] ?? []), 0),
   }
 
-  const canReview = isAdmin || isLeader
+  const canReview = isAdmin || (isLeader && !!(profile as any)?.leader_can_approve_early_finish)
 
   if (loading || !profile) return (
     <div className="min-h-screen flex items-center justify-center">
@@ -593,9 +616,14 @@ export default function AttendanceHistoryPage() {
           {(isAdmin || isLeader) && (
             <select className="select w-auto" value={selectedStaffId}
               onChange={e => setSelectedStaffId(e.target.value)}>
-              {staffList.map(s => (
-                <option key={s.id} value={s.id}>{s.name}</option>
-              ))}
+              {staffList.map(s => {
+                const deptName = (s as any).departments?.name
+                return (
+                  <option key={s.id} value={s.id}>
+                    {deptName ? `[${deptName}] ` : ''}{s.name}
+                  </option>
+                )
+              })}
             </select>
           )}
           <div className="flex items-center gap-2 ml-auto">
@@ -744,7 +772,7 @@ export default function AttendanceHistoryPage() {
                       </div>
                     </td>
                     <td className="table-td">
-                      {canReview && r.early_finish_status === 'pending' ? (
+                      {canReview && r.early_finish_status === 'pending' && (isAdmin || r.user_id !== user?.id) ? (
                         <div className="flex gap-1">
                           <button onClick={() => handleEarlyFinishReview(r.id, true)} disabled={approving === r.id}
                             className="text-xs bg-emerald-100 text-emerald-700 hover:bg-emerald-200 px-2 py-1 rounded font-medium">
