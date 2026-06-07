@@ -280,7 +280,7 @@ export default function AttendanceHistoryPage() {
       .eq('user_id', selectedStaffId)
       .gte('date', start)
       .lte('date', end)
-      .order('date', { ascending: false })
+.order('date', { ascending: true })
     setRecords(data ?? [])
     setFetching(false)
   }
