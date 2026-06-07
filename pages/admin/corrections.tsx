@@ -25,8 +25,10 @@ const STATUS_COLORS: Record<string, string> = {
 }
 
 export default function CorrectionsAdminPage() {
-  const { user, profile, loading, isAdmin } = useAuth()
+  const { user, profile, loading, isAdmin, isLeader } = useAuth()
   const router = useRouter()
+
+  const canAccess = isAdmin || (isLeader && !!(profile as any)?.leader_can_approve_correction)
 
   const [corrections, setCorrections] = useState<any[]>([])
   const [staffNames, setStaffNames] = useState<Record<string, string>>({})
@@ -37,28 +39,40 @@ export default function CorrectionsAdminPage() {
 
   useEffect(() => {
     if (!loading && !user) router.replace('/login')
-    else if (!loading && profile && !isAdmin) router.replace('/dashboard')
-  }, [user, loading, profile, isAdmin])
+    else if (!loading && profile && !canAccess) router.replace('/dashboard')
+  }, [user, loading, profile, canAccess])
 
   useEffect(() => {
-    if (isAdmin) {
+    if (canAccess) {
       fetchCorrections()
       fetchStaffNames()
     }
-  }, [isAdmin])
+  }, [canAccess])
 
   const fetchCorrections = async () => {
-    const { data, error } = await supabase
+    let q = supabase
       .from('attendance_corrections')
-      .select('*')
+      .select('*, profiles(department_id)')
       .order('created_at', { ascending: false })
+
+    // リーダーは自部署のみ＋自身の申請は除外
+    if (isLeader && !isAdmin && profile?.department_id) {
+      const { data: deptStaff } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('department_id', profile.department_id)
+        .neq('id', user!.id)  // 自身は除外
+      const ids = (deptStaff ?? []).map(s => s.id)
+      if (ids.length === 0) { setCorrections([]); return }
+      q = q.in('user_id', ids)
+    }
+
+    const { data } = await q
     setCorrections(data ?? [])
   }
 
   const fetchStaffNames = async () => {
-    const { data } = await supabase
-      .from('profiles')
-      .select('id, name')
+    const { data } = await supabase.from('profiles').select('id, name')
     const map: Record<string, string> = {}
     for (const p of data ?? []) map[p.id] = p.name
     setStaffNames(map)
