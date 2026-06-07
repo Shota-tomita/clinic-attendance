@@ -137,6 +137,14 @@ function getRateType(dow: number, slot: 'am' | 'pm', rates: any[]): number | nul
   return null
 }
 
+// ─── 部署固定順ソート ─────────────────────────────────────────
+const DEPT_ORDER = ['看護師', 'ORT', '受付', '助手']
+
+function getDeptOrder(deptName: string | undefined | null): number {
+  const idx = DEPT_ORDER.indexOf(deptName ?? '')
+  return idx === -1 ? DEPT_ORDER.length : idx
+}
+
 export default function ExportPage() {
   const { user, profile, loading, isAdmin } = useAuth()
   const router = useRouter()
@@ -144,7 +152,7 @@ export default function ExportPage() {
   const [exporting, setExporting] = useState(false)
   const [preview, setPreview] = useState<any[]>([])
   const [fetching, setFetching] = useState(false)
-  const [sortKey, setSortKey] = useState<'name' | 'department' | 'employment'>('name')
+  const [sortKey, setSortKey] = useState<'name' | 'department' | 'employment'>('department')
 
   useEffect(() => {
     if (!loading && !user) router.replace('/login')
@@ -367,7 +375,16 @@ export default function ExportPage() {
 
   const sorted = [...preview].sort((a, b) => {
     if (sortKey === 'name') return a.name.localeCompare(b.name, 'ja')
-    if (sortKey === 'department') return (a.department ?? '').localeCompare(b.department ?? '', 'ja')
+    if (sortKey === 'department') {
+      const dA = getDeptOrder(a.department)
+      const dB = getDeptOrder(b.department)
+      if (dA !== dB) return dA - dB
+      // 部署内：常勤→パート→五十音
+      const empA = a.employment_type === 'full_time' ? 0 : 1
+      const empB = b.employment_type === 'full_time' ? 0 : 1
+      if (empA !== empB) return empA - empB
+      return a.name.localeCompare(b.name, 'ja')
+    }
     if (sortKey === 'employment') return a.employment_type.localeCompare(b.employment_type)
     return 0
   })
