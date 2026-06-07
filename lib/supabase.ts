@@ -35,6 +35,12 @@ export type Profile = {
   commute_monthly_fee: number | null
   // LINE WORKS
   lineworks_user_id: string | null
+  // リーダー権限
+  leader_can_approve_leave: boolean
+  leader_can_approve_correction: boolean
+  leader_can_approve_early_start: boolean
+  leader_can_approve_early_finish: boolean
+  leader_can_approve_cancel: boolean
   created_at: string
   updated_at: string
   departments?: Department
