@@ -221,6 +221,7 @@ type AdminEditForm = {
   pm_clock_in: string
   pm_clock_out: string
   status: string
+  leave_type: 'full' | 'am' | 'pm'  // paid_leave選択時の区分
   clock_out_reason: string
   note: string
 }
@@ -263,7 +264,7 @@ export default function AttendanceHistoryPage() {
   const [adminEditRecord, setAdminEditRecord] = useState<any | null>(null)
   const [adminEditForm, setAdminEditForm] = useState<AdminEditForm>({
     am_clock_in: '', am_clock_out: '', pm_clock_in: '', pm_clock_out: '',
-    status: 'present', clock_out_reason: 'normal', note: '',
+    status: 'present', leave_type: 'full', clock_out_reason: 'normal', note: '',
   })
   const [adminEditSaving, setAdminEditSaving] = useState(false)
   const [adminEditError, setAdminEditError] = useState('')
@@ -418,6 +419,7 @@ export default function AttendanceHistoryPage() {
       pm_clock_in:  toTime(record.pm_clock_in),
       pm_clock_out: toTime(record.pm_clock_out ?? record.clock_out),
       status: record.status ?? 'present',
+      leave_type: record.am_leave ? 'am' : record.pm_leave ? 'pm' : 'full',
       clock_out_reason: record.clock_out_reason ?? 'normal',
       note: record.note ?? '',
     })
@@ -454,20 +456,38 @@ export default function AttendanceHistoryPage() {
       return
     }
 
+    // paid_leave の場合は leave_type から am_leave/pm_leave を決定
+    const isPaidLeaveStatus = adminEditForm.status === 'paid_leave'
+    const amLeave = isPaidLeaveStatus && adminEditForm.leave_type === 'am'
+    const pmLeave = isPaidLeaveStatus && adminEditForm.leave_type === 'pm'
+    // 半日有給の場合は打刻をクリア
+    const leaveAmIn   = amLeave ? null : amIn
+    const leaveAmOut  = amLeave ? null : amOut
+    const leavePmIn   = pmLeave ? null : pmIn
+    const leavePmOut  = pmLeave ? null : pmOut
+
     const payload: any = {
-      am_clock_in:  amIn,
-      am_clock_out: amOut,
-      pm_clock_in:  pmIn,
-      pm_clock_out: pmOut,
-      // clock_in/clock_out は後方互換のため am/pm から導出
-      clock_in:  amIn ?? pmIn,
-      clock_out: pmOut ?? amOut,
+      am_clock_in:  isPaidLeaveStatus && adminEditForm.leave_type === 'full' ? null : leaveAmIn,
+      am_clock_out: isPaidLeaveStatus && adminEditForm.leave_type === 'full' ? null : leaveAmOut,
+      pm_clock_in:  isPaidLeaveStatus && adminEditForm.leave_type === 'full' ? null : leavePmIn,
+      pm_clock_out: isPaidLeaveStatus && adminEditForm.leave_type === 'full' ? null : leavePmOut,
+      clock_in:  isPaidLeaveStatus && adminEditForm.leave_type === 'full' ? null : (leaveAmIn ?? leavePmIn),
+      clock_out: isPaidLeaveStatus && adminEditForm.leave_type === 'full' ? null : (leavePmOut ?? leaveAmOut),
+      am_leave: amLeave,
+      pm_leave: pmLeave,
       status: adminEditForm.status,
       clock_out_reason: adminEditForm.clock_out_reason,
       note: adminEditForm.note || null,
       early_finish_status: adminEditRecord.early_finish_status ?? 'not_required',
       updated_at: new Date().toISOString(),
     }
+
+    const prevStatus   = adminEditRecord.status ?? ''
+    const prevAmLeave  = adminEditRecord.am_leave === true
+    const prevPmLeave  = adminEditRecord.pm_leave === true
+    const prevDays     = prevStatus === 'paid_leave' ? (prevAmLeave || prevPmLeave ? 0.5 : 1) : 0
+    const newStatus    = adminEditForm.status
+    const newDays      = newStatus === 'paid_leave' ? (amLeave || pmLeave ? 0.5 : 1) : 0
 
     if (adminEditRecord.id) {
       // 既存レコードの更新
@@ -494,6 +514,15 @@ export default function AttendanceHistoryPage() {
           ...payload,
         })
       if (error) { setAdminEditError(error.message); setAdminEditSaving(false); return }
+    }
+
+    // paid_leave の日数差分で used_leave_days を加減算（終日=1、半日=0.5）
+    const daysDiff = newDays - prevDays
+    if (daysDiff !== 0) {
+      const { data: p } = await supabase.from('profiles').select('used_leave_days').eq('id', selectedStaffId).single()
+      await supabase.from('profiles').update({
+        used_leave_days: Math.max((p?.used_leave_days ?? 0) + daysDiff, 0),
+      }).eq('id', selectedStaffId)
     }
 
     setAdminEditSaving(false)
@@ -869,15 +898,32 @@ export default function AttendanceHistoryPage() {
                 <label className="label">ステータス</label>
                 <select
                   className="select"
-                  value={adminEditForm.status}
-                  onChange={e => setAdminEditForm(f => ({ ...f, status: e.target.value }))}
+                  value={
+                    adminEditForm.status === 'paid_leave'
+                      ? `paid_leave_${adminEditForm.leave_type}`
+                      : adminEditForm.status
+                  }
+                  onChange={e => {
+                    const v = e.target.value
+                    if (v === 'paid_leave_full') {
+                      setAdminEditForm(f => ({ ...f, status: 'paid_leave', leave_type: 'full' }))
+                    } else if (v === 'paid_leave_am') {
+                      setAdminEditForm(f => ({ ...f, status: 'paid_leave', leave_type: 'am' }))
+                    } else if (v === 'paid_leave_pm') {
+                      setAdminEditForm(f => ({ ...f, status: 'paid_leave', leave_type: 'pm' }))
+                    } else {
+                      setAdminEditForm(f => ({ ...f, status: v, leave_type: 'full' }))
+                    }
+                  }}
                 >
                   <option value="present">出勤</option>
                   <option value="absent">欠勤</option>
                   <option value="late">遅刻</option>
                   <option value="early_leave">早退</option>
                   <option value="holiday">休日</option>
-                  <option value="paid_leave">有給</option>
+                  <option value="paid_leave_full">有給（終日）</option>
+                  <option value="paid_leave_am">有給（午前）</option>
+                  <option value="paid_leave_pm">有給（午後）</option>
                   <option value="sick_leave">病欠</option>
                 </select>
               </div>
