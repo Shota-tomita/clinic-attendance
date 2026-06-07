@@ -340,6 +340,15 @@ export default function LeavePage() {
     fetchRequests()
   }
 
+  // スタッフ自身が pending 申請を取り消す
+  const handleCancelPending = async (req: LeaveWithProfile) => {
+    if (!confirm('申請を取り消しますか？')) return
+    await supabase.from('leave_requests').update({
+      status: 'rejected',
+    }).eq('id', req.id)
+    fetchRequests()
+  }
+
   const handleCancellationConsent = async (id: string) => {
     await supabase.from('leave_requests').update({
       cancellation_consent: true, cancellation_consent_at: new Date().toISOString(),
@@ -450,6 +459,11 @@ export default function LeavePage() {
                     {!canReview && r.status === 'approved' && !r.cancellation_consent && (
                       <button onClick={() => setConsentingId(r.id)} className="text-xs text-gray-400 hover:text-red-500 mt-1 underline">
                         承認取り消しに同意する
+                      </button>
+                    )}
+                    {!canReview && r.status === 'pending' && (
+                      <button onClick={() => handleCancelPending(r)} className="text-xs text-red-400 hover:text-red-600 mt-1 underline">
+                        申請を取り消す
                       </button>
                     )}
                     {r.cancellation_consent && <div className="text-xs text-orange-500 mt-0.5">⚠️ 取り消し同意済み</div>}
