@@ -15,8 +15,11 @@ const STATUS_COLORS: Record<string, string> = {
 }
 
 export default function AdminEarlyStartPage() {
-  const { user, profile, loading, isAdmin } = useAuth()
+  const { user, profile, loading, isAdmin, isLeader } = useAuth()
   const router = useRouter()
+
+  const canAccess = isAdmin || (isLeader && !!(profile as any)?.leader_can_approve_early_start)
+
   const [requests, setRequests] = useState<any[]>([])
   const [staffNames, setStaffNames] = useState<Record<string, string>>({})
   const [staffList, setStaffList] = useState<Profile[]>([])
@@ -35,18 +38,32 @@ export default function AdminEarlyStartPage() {
 
   useEffect(() => {
     if (!loading && !user) router.replace('/login')
-    else if (!loading && profile && !isAdmin) router.replace('/dashboard')
-  }, [user, loading, profile, isAdmin])
+    else if (!loading && profile && !canAccess) router.replace('/dashboard')
+  }, [user, loading, profile, canAccess])
 
   useEffect(() => {
-    if (isAdmin) { fetchRequests(); fetchStaffNames(); fetchStaffList() }
-  }, [isAdmin])
+    if (canAccess) { fetchRequests(); fetchStaffNames(); fetchStaffList() }
+  }, [canAccess])
 
   const fetchRequests = async () => {
-    const { data } = await supabase
+    let q = supabase
       .from('early_start_requests')
       .select('*')
       .order('date', { ascending: false })
+
+    // リーダーは自部署のみ＋自身の申請は除外
+    if (isLeader && !isAdmin && profile?.department_id) {
+      const { data: deptStaff } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('department_id', profile.department_id)
+        .neq('id', user!.id)
+      const ids = (deptStaff ?? []).map(s => s.id)
+      if (ids.length === 0) { setRequests([]); return }
+      q = q.in('user_id', ids)
+    }
+
+    const { data } = await q
     setRequests(data ?? [])
   }
 
@@ -58,7 +75,12 @@ export default function AdminEarlyStartPage() {
   }
 
   const fetchStaffList = async () => {
-    const { data } = await supabase.from('profiles').select('*').neq('role', 'admin').order('name')
+    // リーダーは自部署のみ（自身除く）・院長は全員
+    let q = supabase.from('profiles').select('*').neq('role', 'admin').order('name')
+    if (isLeader && !isAdmin && profile?.department_id) {
+      q = q.eq('department_id', profile.department_id).neq('id', user!.id)
+    }
+    const { data } = await q
     setStaffList(data ?? [])
   }
 
