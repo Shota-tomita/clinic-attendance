@@ -232,6 +232,7 @@ export default function ExportPage() {
           saturday_min: 0, custom_min: 0,
           weekday_am_amount: 0, weekday_pm_amount: 0,
           saturday_amount: 0, custom_amount: 0,
+          paid_leave_amount: 0,  // 有給時給合計（時給パートのみ）
         }
       }
 
@@ -264,7 +265,69 @@ export default function ExportPage() {
       s.overtime_minutes += overtimeMin
       s.deduction_minutes += deductionMin
       s.actual_minutes += actualMin
-      if (r.status === 'paid_leave') s.paid_leave_days++
+      if (r.status === 'paid_leave') {
+        s.paid_leave_days += (r as any).am_leave || (r as any).pm_leave ? 0.5 : 1
+
+        // 時給パートの有給：シフト所定時間で時給計算
+        if (s.pay_type === 'hourly' && blocks.length > 0) {
+          const rates = ratesByUser[r.user_id] ?? []
+          const dow = getDay(parseISO(r.date))
+          const isSat = dow === 6
+          const isHalfAmLeave = (r as any).am_leave === true
+          const isHalfPmLeave = (r as any).pm_leave === true
+
+          const sorted = [...blocks].sort((a: any, b: any) => a.sort_order - b.sort_order)
+          const amBlock = sorted.find((b: any) => b.sort_order === 0)
+          const pmBlock = sorted.find((b: any) => b.sort_order === 1)
+
+          // 終日有給 or 半日有給（午前）
+          if (amBlock && (!isHalfPmLeave || isHalfAmLeave || (!isHalfAmLeave && !isHalfPmLeave))) {
+            const [sh, sm] = amBlock.start_time.split(':').map(Number)
+            const [eh, em] = amBlock.end_time.split(':').map(Number)
+            const amScheduledMin = (eh * 60 + em) - (sh * 60 + sm)
+            if (!isHalfPmLeave || isHalfAmLeave || (!isHalfAmLeave && !isHalfPmLeave)) {
+              const useAmMin = (isHalfPmLeave && !isHalfAmLeave) ? 0 : amScheduledMin
+              if (useAmMin > 0) {
+                const rate = getRateType(dow, 'am', rates) ?? s.hourly_rate
+                if (isSat) {
+                  s.saturday_min += useAmMin
+                  s.saturday_amount += Math.round(useAmMin / 60 * rate)
+                  s.paid_leave_amount = (s.paid_leave_amount ?? 0) + Math.round(useAmMin / 60 * rate)
+                } else {
+                  s.weekday_am_min += useAmMin
+                  s.weekday_am_amount += Math.round(useAmMin / 60 * rate)
+                  s.paid_leave_amount = (s.paid_leave_amount ?? 0) + Math.round(useAmMin / 60 * rate)
+                }
+              }
+            }
+          }
+
+          // 終日有給 or 半日有給（午後）
+          if (pmBlock && (!isHalfAmLeave || isHalfPmLeave || (!isHalfAmLeave && !isHalfPmLeave))) {
+            const [sh, sm] = pmBlock.start_time.split(':').map(Number)
+            const [eh, em] = pmBlock.end_time.split(':').map(Number)
+            const pmScheduledMin = (eh * 60 + em) - (sh * 60 + sm)
+            const usePmMin = (isHalfAmLeave && !isHalfPmLeave) ? 0 : pmScheduledMin
+            if (usePmMin > 0) {
+              const rate = getRateType(dow, 'pm', rates) ?? s.hourly_rate
+              if (isSat) {
+                s.saturday_min += usePmMin
+                s.saturday_amount += Math.round(usePmMin / 60 * rate)
+                s.paid_leave_amount = (s.paid_leave_amount ?? 0) + Math.round(usePmMin / 60 * rate)
+              } else {
+                s.weekday_pm_min += usePmMin
+                s.weekday_pm_amount += Math.round(usePmMin / 60 * rate)
+                s.paid_leave_amount = (s.paid_leave_amount ?? 0) + Math.round(usePmMin / 60 * rate)
+              }
+            }
+          }
+
+          // シフトが午前のみの場合（pmBlockなし・終日有給）
+          if (!pmBlock && amBlock && !isHalfAmLeave && !isHalfPmLeave) {
+            // amBlockのみで終日カバー済み（上の amBlock 処理で完了）
+          }
+        }
+      }
 
       // 時給区分別の計算（時給制スタッフのみ）
       if (s.pay_type === 'hourly') {
@@ -320,6 +383,7 @@ export default function ExportPage() {
       '平日午前(時間)', '平日午前(金額)',
       '平日午後(時間)', '平日午後(金額)',
       '土曜(時間)', '土曜(金額)',
+      '有給時給合計',
     ]
     const rows = sorted.map(s => [
       s.name, s.department,
@@ -335,6 +399,7 @@ export default function ExportPage() {
       s.pay_type === 'hourly' ? `¥${s.weekday_pm_amount.toLocaleString()}` : '—',
       s.pay_type === 'hourly' ? formatMinutes(s.saturday_min) : '—',
       s.pay_type === 'hourly' ? `¥${s.saturday_amount.toLocaleString()}` : '—',
+      s.pay_type === 'hourly' && s.paid_leave_amount > 0 ? `¥${s.paid_leave_amount.toLocaleString()}` : '—',
     ])
     const csv = [
       `# ${format(parseISO(month + '-01'), 'yyyy年M月', { locale: ja })} 勤怠データ`,
@@ -414,6 +479,7 @@ export default function ExportPage() {
                   <th className="table-th">平日午前</th>
                   <th className="table-th">平日午後</th>
                   <th className="table-th">土曜</th>
+                  <th className="table-th">有給時給</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
@@ -481,6 +547,13 @@ export default function ExportPage() {
                         <div>
                           <div>{formatMinutes(s.saturday_min)}</div>
                           <div className="text-clinic-600">¥{s.saturday_amount.toLocaleString()}</div>
+                        </div>
+                      ) : <span className="text-gray-300">—</span>}
+                    </td>
+                    <td className="table-td text-xs">
+                      {s.pay_type === 'hourly' && s.paid_leave_amount > 0 ? (
+                        <div className="text-emerald-600 font-medium">
+                          ¥{s.paid_leave_amount.toLocaleString()}
                         </div>
                       ) : <span className="text-gray-300">—</span>}
                     </td>
