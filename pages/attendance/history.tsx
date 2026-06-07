@@ -290,6 +290,10 @@ export default function AttendanceHistoryPage() {
     }
   }
 
+  // 時給計算用state
+  const [staffPayInfo, setStaffPayInfo] = useState<{ pay_type: string; hourly_rate: number } | null>(null)
+  const [staffRates, setStaffRates] = useState<any[]>([])
+
   const fetchRecords = async () => {
     if (!selectedStaffId) return
     setFetching(true)
@@ -300,8 +304,27 @@ export default function AttendanceHistoryPage() {
       .eq('user_id', selectedStaffId)
       .gte('date', start)
       .lte('date', end)
-.order('date', { ascending: true })
+      .order('date', { ascending: true })
     setRecords(data ?? [])
+
+    // 時給パートの場合のみ時給情報を取得
+    const { data: pData } = await supabase
+      .from('profiles')
+      .select('pay_type, hourly_rate')
+      .eq('id', selectedStaffId)
+      .single()
+    setStaffPayInfo(pData ?? null)
+
+    if (pData?.pay_type === 'hourly') {
+      const { data: rates } = await supabase
+        .from('part_time_rates')
+        .select('*')
+        .eq('user_id', selectedStaffId)
+      setStaffRates(rates ?? [])
+    } else {
+      setStaffRates([])
+    }
+
     setFetching(false)
   }
 
@@ -503,6 +526,41 @@ export default function AttendanceHistoryPage() {
   const noRecordDates = allDaysInMonth.filter(d => !recordDates.has(d) && new Date(d) <= new Date())
 
   // 月次集計
+  const getRateType = (dow: number, slot: 'am' | 'pm', rates: any[]): number | null => {
+    const custom = rates.find(r => r.rate_type === 'custom' && r.day_of_week === dow && r.time_slot === slot)
+    if (custom) return custom.hourly_rate
+    if (dow === 6) { const sat = rates.find(r => r.rate_type === 'saturday'); if (sat) return sat.hourly_rate }
+    else if (dow !== 0) { const w = rates.find(r => r.rate_type === (slot === 'am' ? 'weekday_am' : 'weekday_pm')); if (w) return w.hourly_rate }
+    return null
+  }
+
+  const calcPaidLeaveAmount = (r: any, blocks: any[]): number => {
+    if (!staffPayInfo || staffPayInfo.pay_type !== 'hourly' || blocks.length === 0) return 0
+    const sorted = [...blocks].sort((a: any, b: any) => a.sort_order - b.sort_order)
+    const amBlock = sorted.find((b: any) => b.sort_order === 0)
+    const pmBlock = sorted.find((b: any) => b.sort_order === 1)
+    const dow = parseISO(r.date).getDay()
+    const isSat = dow === 6
+    const isHalfAm = r.am_leave === true
+    const isHalfPm = r.pm_leave === true
+    let total = 0
+    if (amBlock && !isHalfPm) {
+      const [sh, sm] = amBlock.start_time.split(':').map(Number)
+      const [eh, em] = amBlock.end_time.split(':').map(Number)
+      const min = (eh * 60 + em) - (sh * 60 + sm)
+      const rate = getRateType(dow, 'am', staffRates) ?? staffPayInfo.hourly_rate
+      total += Math.round(min / 60 * rate)
+    }
+    if (pmBlock && !isHalfAm) {
+      const [sh, sm] = pmBlock.start_time.split(':').map(Number)
+      const [eh, em] = pmBlock.end_time.split(':').map(Number)
+      const min = (eh * 60 + em) - (sh * 60 + sm)
+      const rate = getRateType(dow, 'pm', staffRates) ?? staffPayInfo.hourly_rate
+      total += Math.round(min / 60 * rate)
+    }
+    return total
+  }
+
   const summary = {
     workDays: computedRecords.filter(r => ['present', 'late', 'early_leave'].includes(r.status)).length,
     overtimeMin: computedRecords.reduce((s, r) => s + r._overtimeMin, 0),
@@ -512,6 +570,9 @@ export default function AttendanceHistoryPage() {
     paidLeave: computedRecords.filter(r => r.status === 'paid_leave').length,
     actualMin: computedRecords.reduce((s, r) => s + r._actualMin, 0),
     pendingApprovals: computedRecords.filter(r => r.early_finish_status === 'pending').length,
+    paidLeaveAmount: computedRecords
+      .filter(r => r.status === 'paid_leave')
+      .reduce((s, r) => s + calcPaidLeaveAmount(r, shiftMap[r.date] ?? []), 0),
   }
 
   const canReview = isAdmin || isLeader
@@ -882,6 +943,9 @@ export default function AttendanceHistoryPage() {
               <SummaryRow label="実働合計" value={summary.actualMin > 0 ? formatMinutes(summary.actualMin) : '—'} />
               <SummaryRow label="残業合計" value={summary.overtimeMin > 0 ? formatMinutes(summary.overtimeMin) : '—'} highlight={summary.overtimeMin > 0 ? 'text-amber-600' : undefined} />
               <SummaryRow label="控除合計" value={summary.deductionMin > 0 ? formatMinutes(summary.deductionMin) : '—'} highlight={summary.deductionMin > 0 ? 'text-red-500' : undefined} />
+              {staffPayInfo?.pay_type === 'hourly' && summary.paidLeaveAmount > 0 && (
+                <SummaryRow label="有給時給" value={`¥${summary.paidLeaveAmount.toLocaleString()}`} highlight="text-emerald-600" />
+              )}
             </div>
           </div>
         )}
