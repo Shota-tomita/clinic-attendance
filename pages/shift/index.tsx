@@ -10,6 +10,13 @@ import {
 } from 'date-fns'
 import { ja } from 'date-fns/locale'
 
+// 部署固定順
+const DEPT_ORDER = ['看護師', 'ORT', '受付', '助手']
+function getDeptOrder(name: string | undefined | null) {
+  const i = DEPT_ORDER.indexOf(name ?? '')
+  return i === -1 ? DEPT_ORDER.length : i
+}
+
 // 看護師・ORT の曜日自動パターンマップ
 const AUTO_PATTERN_MAP: Record<string, Record<number, string>> = {
   '00000000-0000-0000-0000-000000000001': { // 看護師
@@ -173,13 +180,21 @@ export default function ShiftPage() {
   }
 
   const sortedStaffList = [...staffList].sort((a, b) => {
+    const deptA = getDeptOrder((a as any).departments?.name)
+    const deptB = getDeptOrder((b as any).departments?.name)
+    if (sortKey === 'department') {
+      if (deptA !== deptB) return sortOrder === 'asc' ? deptA - deptB : deptB - deptA
+      const empA = a.employment_type === 'full_time' ? 0 : 1
+      const empB = b.employment_type === 'full_time' ? 0 : 1
+      if (empA !== empB) return sortOrder === 'asc' ? empA - empB : empB - empA
+      return a.name.localeCompare(b.name, 'ja')
+    }
     let valA: any, valB: any
     if (sortKey === 'name') { valA = a.name; valB = b.name }
-    else if (sortKey === 'department') { valA = (a as any).departments?.name ?? ''; valB = (b as any).departments?.name ?? '' }
     else if (sortKey === 'employment') { valA = a.employment_type; valB = b.employment_type }
     if (valA < valB) return sortOrder === 'asc' ? -1 : 1
     if (valA > valB) return sortOrder === 'asc' ? 1 : -1
-    return 0
+    return deptA - deptB  // 第2キー：部署順
   })
 
   const prevMonth = () => setMonth(format(subMonths(parseISO(month + '-01'), 1), 'yyyy-MM'))
@@ -250,9 +265,9 @@ export default function ShiftPage() {
 
         {/* Shift table */}
         <div className="card p-0 overflow-hidden">
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto" style={{ maxHeight: 'calc(100vh - 280px)', overflowY: 'auto' }}>
             <table className="w-full text-xs min-w-max">
-              <thead className="bg-gray-50 border-b border-gray-100 sticky top-0 z-20">
+              <thead className="bg-gray-50 border-b border-gray-100" style={{ position: 'sticky', top: 0, zIndex: 20 }}>
                 <tr>
                   <th className="sticky left-0 z-10 bg-gray-50 px-3 py-2 text-left font-medium text-gray-600 min-w-[120px]">
                     スタッフ
