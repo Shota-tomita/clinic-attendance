@@ -8,7 +8,7 @@ import {
   earlyFinishStatusLabel, earlyFinishStatusColor,
   getCurrentMonth, getMonthRange
 } from '@/lib/utils'
-import { format, addMonths, subMonths, parseISO, differenceInMinutes } from 'date-fns'
+import { format, addMonths, subMonths, parseISO, differenceInMinutes, eachDayOfInterval, startOfMonth, endOfMonth } from 'date-fns'
 import { ja } from 'date-fns/locale'
 
 // 実働時間計算（シフト開始より早い分を除外・早出申請対応・中抜き対応）
@@ -214,6 +214,17 @@ function calcScheduledMin(shiftBlocks: any[]): number {
   }, 0)
 }
 
+// ─── 院長直接編集モーダル用の型 ───────────────────────
+type AdminEditForm = {
+  am_clock_in: string
+  am_clock_out: string
+  pm_clock_in: string
+  pm_clock_out: string
+  status: string
+  clock_out_reason: string
+  note: string
+}
+
 export default function AttendanceHistoryPage() {
   const { user, profile, loading, isAdmin, isLeader } = useAuth()
   const router = useRouter()
@@ -225,6 +236,15 @@ export default function AttendanceHistoryPage() {
   const [selectedStaffId, setSelectedStaffId] = useState('')
   const [fetching, setFetching] = useState(false)
   const [approving, setApproving] = useState<string | null>(null)
+
+  // 院長直接編集モーダル
+  const [adminEditRecord, setAdminEditRecord] = useState<any | null>(null)
+  const [adminEditForm, setAdminEditForm] = useState<AdminEditForm>({
+    am_clock_in: '', am_clock_out: '', pm_clock_in: '', pm_clock_out: '',
+    status: 'present', clock_out_reason: 'normal', note: '',
+  })
+  const [adminEditSaving, setAdminEditSaving] = useState(false)
+  const [adminEditError, setAdminEditError] = useState('')
 
   useEffect(() => {
     if (!loading && !user) router.replace('/login')
@@ -338,6 +358,111 @@ export default function AttendanceHistoryPage() {
     fetchRecords()
   }
 
+  // ─── 院長直接編集 ──────────────────────────────────────
+  const openAdminEdit = (record: any) => {
+    if (!isAdmin) return
+    // ISO文字列 → HH:mm 変換
+    const toTime = (iso: string | null) => {
+      if (!iso) return ''
+      return format(parseISO(iso), 'HH:mm')
+    }
+    setAdminEditForm({
+      am_clock_in:  toTime(record.am_clock_in ?? record.clock_in),
+      am_clock_out: toTime(record.am_clock_out),
+      pm_clock_in:  toTime(record.pm_clock_in),
+      pm_clock_out: toTime(record.pm_clock_out ?? record.clock_out),
+      status: record.status ?? 'present',
+      clock_out_reason: record.clock_out_reason ?? 'normal',
+      note: record.note ?? '',
+    })
+    setAdminEditError('')
+    setAdminEditRecord(record)
+  }
+
+  const handleAdminEditSave = async () => {
+    if (!adminEditRecord || !user) return
+    setAdminEditSaving(true)
+    setAdminEditError('')
+
+    const date = adminEditRecord.date
+    // HH:mm → ISO（JST）変換
+    const toISO = (time: string): string | null => {
+      if (!time) return null
+      return `${date}T${time}:00+09:00`
+    }
+
+    const amIn  = toISO(adminEditForm.am_clock_in)
+    const amOut = toISO(adminEditForm.am_clock_out)
+    const pmIn  = toISO(adminEditForm.pm_clock_in)
+    const pmOut = toISO(adminEditForm.pm_clock_out)
+
+    // 簡易バリデーション
+    if (amIn && amOut && amIn >= amOut) {
+      setAdminEditError('午前：出勤時刻が退勤時刻より後になっています')
+      setAdminEditSaving(false)
+      return
+    }
+    if (pmIn && pmOut && pmIn >= pmOut) {
+      setAdminEditError('午後：出勤時刻が退勤時刻より後になっています')
+      setAdminEditSaving(false)
+      return
+    }
+
+    const payload: any = {
+      am_clock_in:  amIn,
+      am_clock_out: amOut,
+      pm_clock_in:  pmIn,
+      pm_clock_out: pmOut,
+      // clock_in/clock_out は後方互換のため am/pm から導出
+      clock_in:  amIn ?? pmIn,
+      clock_out: pmOut ?? amOut,
+      status: adminEditForm.status,
+      clock_out_reason: adminEditForm.clock_out_reason,
+      note: adminEditForm.note || null,
+      early_finish_status: adminEditRecord.early_finish_status ?? 'not_required',
+      updated_at: new Date().toISOString(),
+    }
+
+    if (adminEditRecord.id) {
+      // 既存レコードの更新
+      const { error } = await supabase
+        .from('attendance_records')
+        .update(payload)
+        .eq('id', adminEditRecord.id)
+      if (error) { setAdminEditError(error.message); setAdminEditSaving(false); return }
+    } else {
+      // レコードが存在しない日の新規作成（直接入力）
+      const { error } = await supabase
+        .from('attendance_records')
+        .insert({
+          user_id: selectedStaffId,
+          date,
+          break_minutes: 0,
+          scheduled_minutes: 0,
+          actual_minutes: 0,
+          overtime_minutes: 0,
+          deduction_minutes: 0,
+          late_minutes: 0,
+          early_leave_minutes: 0,
+          early_finish_status: 'not_required',
+          ...payload,
+        })
+      if (error) { setAdminEditError(error.message); setAdminEditSaving(false); return }
+    }
+
+    setAdminEditSaving(false)
+    setAdminEditRecord(null)
+    fetchRecords()
+  }
+
+  const handleAdminDelete = async () => {
+    if (!adminEditRecord?.id) return
+    if (!confirm('この勤怠記録を削除しますか？')) return
+    await supabase.from('attendance_records').delete().eq('id', adminEditRecord.id)
+    setAdminEditRecord(null)
+    fetchRecords()
+  }
+
   const prevMonth = () => setMonth(format(subMonths(parseISO(month + '-01'), 1), 'yyyy-MM'))
   const nextMonth = () => setMonth(format(addMonths(parseISO(month + '-01'), 1), 'yyyy-MM'))
 
@@ -366,6 +491,16 @@ export default function AttendanceHistoryPage() {
       : 0
     return { ...r, _scheduledMin: scheduledMin, _actualMin: actualMin, _lateMin: lateMin, _amLate: amLate, _pmLate: pmLate, _overtimeMin: overtimeMin, _deductionMin: deductionMin }
   })
+
+  // 院長用：月の全日付を生成（レコードなし日にも直接入力ボタンを表示するため）
+  const allDaysInMonth = isAdmin
+    ? eachDayOfInterval({
+        start: startOfMonth(parseISO(month + '-01')),
+        end: endOfMonth(parseISO(month + '-01')),
+      }).map(d => format(d, 'yyyy-MM-dd'))
+    : []
+  const recordDates = new Set(computedRecords.map(r => r.date))
+  const noRecordDates = allDaysInMonth.filter(d => !recordDates.has(d) && new Date(d) <= new Date())
 
   // 月次集計
   const summary = {
@@ -464,17 +599,18 @@ export default function AttendanceHistoryPage() {
                   <th className="table-th">控除</th>
                   <th className="table-th">ステータス</th>
                   <th className="table-th">備考</th>
+                  {isAdmin && <th className="table-th">直接編集</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
                 {fetching ? (
                   <tr><td colSpan={12} className="text-center py-8 text-gray-400">読込中...</td></tr>
                 ) : computedRecords.length === 0 ? (
-                  <tr><td colSpan={12} className="text-center py-8 text-gray-400">この月の記録はありません</td></tr>
+                  <tr><td colSpan={13} className="text-center py-8 text-gray-400">この月の記録はありません</td></tr>
                 ) : computedRecords.map(r => {
                   const isShort = r._scheduledMin > 0 && r._actualMin < r._scheduledMin && ['present','late','early_leave'].includes(r.status)
                   return (
-                  <tr key={r.id} className={`hover:bg-gray-50 ${r.early_finish_status === 'pending' ? 'bg-amber-50/40' : isShort ? 'bg-red-50/40' : ''}`}>
+                  <tr key={r.id ?? r.date} className={`hover:bg-gray-50 ${r.early_finish_status === 'pending' ? 'bg-amber-50/40' : isShort ? 'bg-red-50/40' : ''}`}>
                     <td className="table-td font-medium whitespace-nowrap">
                       {format(parseISO(r.date), 'M/d(EEE)', { locale: ja })}
                     </td>
@@ -562,6 +698,16 @@ export default function AttendanceHistoryPage() {
                         <span className="text-xs text-gray-400">{r.note ?? ''}</span>
                       )}
                     </td>
+                    {isAdmin && (
+                      <td className="table-td">
+                        <button
+                          onClick={() => openAdminEdit(r)}
+                          className="text-xs bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-200 px-2 py-1 rounded font-medium whitespace-nowrap"
+                        >
+                          ✏️ 修正
+                        </button>
+                      </td>
+                    )}
                   </tr>
                 )})
                 }
@@ -569,6 +715,160 @@ export default function AttendanceHistoryPage() {
             </table>
           </div>
         </div>
+
+        {/* 院長直接編集モーダル */}
+        {isAdmin && adminEditRecord && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
+            <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+              <div className="flex items-center justify-between">
+                <h2 className="font-semibold text-gray-800 text-base">
+                  🔧 院長直接編集
+                </h2>
+                <span className="text-sm text-gray-500">
+                  {staffList.find(s => s.id === selectedStaffId)?.name} / {format(parseISO(adminEditRecord.date), 'M/d(EEE)', { locale: ja })}
+                </span>
+              </div>
+
+              {adminEditError && (
+                <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-sm text-red-600">
+                  ⚠️ {adminEditError}
+                </div>
+              )}
+
+              {/* 打刻時刻入力グリッド */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="label">午前 出勤</label>
+                  <input
+                    type="time"
+                    className="input"
+                    value={adminEditForm.am_clock_in}
+                    onChange={e => setAdminEditForm(f => ({ ...f, am_clock_in: e.target.value }))}
+                  />
+                </div>
+                <div>
+                  <label className="label">午前 退勤</label>
+                  <input
+                    type="time"
+                    className="input"
+                    value={adminEditForm.am_clock_out}
+                    onChange={e => setAdminEditForm(f => ({ ...f, am_clock_out: e.target.value }))}
+                  />
+                </div>
+                <div>
+                  <label className="label">午後 出勤</label>
+                  <input
+                    type="time"
+                    className="input"
+                    value={adminEditForm.pm_clock_in}
+                    onChange={e => setAdminEditForm(f => ({ ...f, pm_clock_in: e.target.value }))}
+                  />
+                </div>
+                <div>
+                  <label className="label">午後 退勤</label>
+                  <input
+                    type="time"
+                    className="input"
+                    value={adminEditForm.pm_clock_out}
+                    onChange={e => setAdminEditForm(f => ({ ...f, pm_clock_out: e.target.value }))}
+                  />
+                </div>
+              </div>
+
+              {/* ステータス */}
+              <div>
+                <label className="label">ステータス</label>
+                <select
+                  className="select"
+                  value={adminEditForm.status}
+                  onChange={e => setAdminEditForm(f => ({ ...f, status: e.target.value }))}
+                >
+                  <option value="present">出勤</option>
+                  <option value="absent">欠勤</option>
+                  <option value="late">遅刻</option>
+                  <option value="early_leave">早退</option>
+                  <option value="holiday">休日</option>
+                  <option value="paid_leave">有給</option>
+                  <option value="sick_leave">病欠</option>
+                </select>
+              </div>
+
+              {/* 退勤区分 */}
+              <div>
+                <label className="label">退勤区分</label>
+                <select
+                  className="select"
+                  value={adminEditForm.clock_out_reason}
+                  onChange={e => setAdminEditForm(f => ({ ...f, clock_out_reason: e.target.value }))}
+                >
+                  <option value="normal">通常退勤</option>
+                  <option value="early_finish">業務完了（早上がり）</option>
+                  <option value="early_leave">早退（体調不良・私用）</option>
+                </select>
+              </div>
+
+              {/* メモ */}
+              <div>
+                <label className="label">メモ（任意）</label>
+                <input
+                  className="input"
+                  value={adminEditForm.note}
+                  onChange={e => setAdminEditForm(f => ({ ...f, note: e.target.value }))}
+                  placeholder="例: 院長による修正"
+                />
+              </div>
+
+              {/* ボタン */}
+              <div className="flex gap-2 pt-1">
+                {adminEditRecord.id && (
+                  <button
+                    onClick={handleAdminDelete}
+                    className="btn-danger text-sm px-3"
+                  >
+                    削除
+                  </button>
+                )}
+                <button
+                  onClick={() => setAdminEditRecord(null)}
+                  className="btn-secondary flex-1 text-sm"
+                >
+                  キャンセル
+                </button>
+                <button
+                  onClick={handleAdminEditSave}
+                  disabled={adminEditSaving}
+                  className="btn-primary flex-1 text-sm"
+                >
+                  {adminEditSaving ? '保存中...' : adminEditRecord.id ? '更新' : '新規作成'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 院長用：記録のない日に直接入力 */}
+        {isAdmin && noRecordDates.length > 0 && (
+          <div className="card">
+            <h3 className="text-xs font-semibold text-gray-500 mb-3">🔧 記録のない日に直接入力（院長）</h3>
+            <div className="flex flex-wrap gap-2">
+              {noRecordDates.map(d => {
+                const dow = parseISO(d).getDay()
+                const WEEKDAYS = ['日','月','火','水','木','金','土']
+                const isWeekend = dow === 0 || dow === 6
+                return (
+                  <button
+                    key={d}
+                    onClick={() => openAdminEdit({ date: d, id: null })}
+                    className={`text-xs px-3 py-1.5 rounded-lg border font-medium transition-all
+                      ${isWeekend ? 'border-gray-200 text-gray-400 bg-gray-50 hover:bg-gray-100' : 'border-amber-200 text-amber-700 bg-amber-50 hover:bg-amber-100'}`}
+                  >
+                    {format(parseISO(d), 'M/d')}({WEEKDAYS[dow]})
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        )}
 
         {/* 月次サマリー */}
         {computedRecords.length > 0 && (
