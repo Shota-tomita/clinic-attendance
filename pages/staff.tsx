@@ -4,6 +4,13 @@ import Layout from '@/components/Layout'
 import { useAuth } from '@/lib/auth'
 import { supabase, Profile, Department } from '@/lib/supabase'
 
+// 部署固定順
+const DEPT_ORDER = ['看護師', 'ORT', '受付', '助手']
+function getDeptOrder(name: string | undefined | null) {
+  const i = DEPT_ORDER.indexOf(name ?? '')
+  return i === -1 ? DEPT_ORDER.length : i
+}
+
 const roleOptions = [
   { value: 'staff', label: 'スタッフ' },
   { value: 'leader', label: 'リーダー' },
@@ -34,7 +41,14 @@ export default function StaffPage() {
   const [showInvite, setShowInvite] = useState(false)
   const [editStaff, setEditStaff] = useState<Profile | null>(null)
   const [inviteForm, setInviteForm] = useState({ email: '', name: '', role: 'staff', department_id: '', employment_type: 'full_time', annual_leave_days: 10 })
-  const [editForm, setEditForm] = useState({ role: 'staff', department_id: '', employment_type: 'full_time', annual_leave_days: 10 })
+  const [editForm, setEditForm] = useState({
+    role: 'staff', department_id: '', employment_type: 'full_time', annual_leave_days: 10,
+    leader_can_approve_leave: false,
+    leader_can_approve_correction: false,
+    leader_can_approve_early_start: false,
+    leader_can_approve_early_finish: false,
+    leader_can_approve_cancel: false,
+  })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [resetStaff, setResetStaff] = useState<Profile | null>(null)
@@ -69,24 +83,29 @@ export default function StaffPage() {
   }
 
   const sortedStaff = [...staff].sort((a, b) => {
-    let valA: any, valB: any
+    const deptA = getDeptOrder((a as any).departments?.name)
+    const deptB = getDeptOrder((b as any).departments?.name)
     if (sortKey === 'department') {
-      valA = (a as any).departments?.name ?? ''
-      valB = (b as any).departments?.name ?? ''
-    } else if (sortKey === 'employment') {
-      valA = a.employment_type
-      valB = b.employment_type
+      if (deptA !== deptB) return sortOrder === 'asc' ? deptA - deptB : deptB - deptA
+      // 部署内：常勤→パート→名前順
+      const empA = a.employment_type === 'full_time' ? 0 : 1
+      const empB = b.employment_type === 'full_time' ? 0 : 1
+      if (empA !== empB) return sortOrder === 'asc' ? empA - empB : empB - empA
+      return a.name.localeCompare(b.name, 'ja')
+    }
+    let valA: any, valB: any
+    if (sortKey === 'employment') {
+      valA = a.employment_type; valB = b.employment_type
     } else if (sortKey === 'hire_date') {
-      valA = (a as any).hire_date ?? ''
-      valB = (b as any).hire_date ?? ''
+      valA = (a as any).hire_date ?? ''; valB = (b as any).hire_date ?? ''
     } else if (sortKey === 'role') {
       const order: Record<string, number> = { admin: 0, leader: 1, staff: 2 }
-      valA = order[a.role] ?? 3
-      valB = order[b.role] ?? 3
+      valA = order[a.role] ?? 3; valB = order[b.role] ?? 3
     }
     if (valA < valB) return sortOrder === 'asc' ? -1 : 1
     if (valA > valB) return sortOrder === 'asc' ? 1 : -1
-    return 0
+    // 第2キー：部署順
+    return deptA - deptB
   })
 
   const handleInvite = async () => {
@@ -123,12 +142,27 @@ export default function StaffPage() {
   const handleEdit = async () => {
     if (!editStaff) return
     setSaving(true)
-    await supabase.from('profiles').update({
+    const update: any = {
       role: editForm.role,
       department_id: editForm.department_id || null,
       employment_type: editForm.employment_type,
       annual_leave_days: editForm.annual_leave_days,
-    }).eq('id', editStaff.id)
+    }
+    if (editForm.role === 'leader') {
+      update.leader_can_approve_leave        = editForm.leader_can_approve_leave
+      update.leader_can_approve_correction   = editForm.leader_can_approve_correction
+      update.leader_can_approve_early_start  = editForm.leader_can_approve_early_start
+      update.leader_can_approve_early_finish = editForm.leader_can_approve_early_finish
+      update.leader_can_approve_cancel       = editForm.leader_can_approve_cancel
+    } else {
+      // リーダー以外はすべてfalseにリセット
+      update.leader_can_approve_leave        = false
+      update.leader_can_approve_correction   = false
+      update.leader_can_approve_early_start  = false
+      update.leader_can_approve_early_finish = false
+      update.leader_can_approve_cancel       = false
+    }
+    await supabase.from('profiles').update(update).eq('id', editStaff.id)
     setSaving(false)
     setEditStaff(null)
     fetchStaff()
@@ -165,6 +199,11 @@ export default function StaffPage() {
       department_id: s.department_id ?? '',
       employment_type: s.employment_type,
       annual_leave_days: s.annual_leave_days,
+      leader_can_approve_leave:        (s as any).leader_can_approve_leave        ?? false,
+      leader_can_approve_correction:   (s as any).leader_can_approve_correction   ?? false,
+      leader_can_approve_early_start:  (s as any).leader_can_approve_early_start  ?? false,
+      leader_can_approve_early_finish: (s as any).leader_can_approve_early_finish ?? false,
+      leader_can_approve_cancel:       (s as any).leader_can_approve_cancel       ?? false,
     })
   }
 
@@ -351,6 +390,31 @@ export default function StaffPage() {
                   onChange={e => setEditForm(f => ({ ...f, annual_leave_days: Number(e.target.value) }))} />
               </div>
             </div>
+            {editForm.role === 'leader' && (
+              <div className="space-y-2">
+                <label className="label">リーダー承認権限</label>
+                <div className="bg-blue-50 rounded-xl p-3 space-y-2">
+                  {([
+                    ['leader_can_approve_leave',        '有給申請の承認'],
+                    ['leader_can_approve_correction',   '打刻修正申請の承認'],
+                    ['leader_can_approve_early_start',  '早出申請の承認'],
+                    ['leader_can_approve_early_finish', '早上がりの承認'],
+                    ['leader_can_approve_cancel',       '有給取消の承認'],
+                  ] as const).map(([key, label]) => (
+                    <label key={key} className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        className="w-4 h-4 rounded text-clinic-600"
+                        checked={editForm[key]}
+                        onChange={e => setEditForm(f => ({ ...f, [key]: e.target.checked }))}
+                      />
+                      <span className="text-sm text-gray-700">{label}</span>
+                    </label>
+                  ))}
+                </div>
+                <p className="text-xs text-gray-400">※ 自分の部署のスタッフのみ。自身の申請は院長のみ承認可能。</p>
+              </div>
+            )}
             <div className="flex gap-3 pt-1">
               <button onClick={() => setEditStaff(null)} className="btn-secondary flex-1">キャンセル</button>
               <button onClick={handleEdit} disabled={saving} className="btn-primary flex-1">
