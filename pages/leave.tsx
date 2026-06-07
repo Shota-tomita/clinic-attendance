@@ -53,7 +53,8 @@ export default function LeavePage() {
   const [reviewingId, setReviewingId] = useState<string | null>(null)
   const [consentingId, setConsentingId] = useState<string | null>(null)
 
-  const canReview = isAdmin || isLeader
+  const canReview = isAdmin || (isLeader && !!(profile as any)?.leader_can_approve_leave)
+  const canApproveCancel = isAdmin || (isLeader && !!(profile as any)?.leader_can_approve_cancel)
   const remaining = (profile?.annual_leave_days ?? 0) - (profile?.used_leave_days ?? 0)
 
   useEffect(() => {
@@ -470,10 +471,11 @@ export default function LeavePage() {
                   </div>
                   <div className="flex items-start gap-2 flex-shrink-0 flex-col">
                     <span className={`badge ${leaveStatusColor(r.status)}`}>{leaveStatusLabel(r.status)}</span>
-                    {canReview && r.status === 'pending' && (
+                    {/* リーダー自身の申請は院長のみ承認可能 */}
+                    {canReview && r.status === 'pending' && (isAdmin || r.user_id !== user?.id) && (
                       <button onClick={() => setReviewingId(r.id)} className="btn-secondary text-xs px-2 py-1">審査</button>
                     )}
-                    {canReview && r.status === 'approved' && (
+                    {canApproveCancel && r.status === 'approved' && (isAdmin || r.user_id !== user?.id) && (
                       <button
                         onClick={() => handleCancelApproval(r)}
                         className={`text-xs px-2 py-1 rounded ${r.cancellation_consent ? 'bg-red-100 text-red-600 hover:bg-red-200' : 'text-gray-300 cursor-not-allowed'}`}
