@@ -199,25 +199,143 @@ export default function LeavePage() {
     fetchRequests()
   }
 
+  // ── ヘルパー：申請対象日を列挙（日曜除外） ──────────────────
+  const getBusinessDates = (startDate: string, endDate: string): string[] => {
+    const dates: string[] = []
+    let cur = parseISO(startDate)
+    const end = parseISO(endDate)
+    while (cur <= end) {
+      if (cur.getDay() !== 0) dates.push(format(cur, 'yyyy-MM-dd'))
+      cur = addDays(cur, 1)
+    }
+    return dates
+  }
+
+  // ── 有給承認時：attendance_records に paid_leave を upsert ──
+  const upsertLeaveRecords = async (req: LeaveWithProfile) => {
+    if (req.leave_type !== 'paid_leave') return
+    const isHalfDay = (req as any).is_half_day === true
+    const halfDayType: 'am' | 'pm' = (req as any).half_day_type ?? 'am'
+    const dates = getBusinessDates(req.start_date, req.end_date)
+
+    for (const date of dates) {
+      const { data: existing } = await supabase
+        .from('attendance_records')
+        .select('id')
+        .eq('user_id', req.user_id)
+        .eq('date', date)
+        .maybeSingle()
+
+      if (isHalfDay) {
+        const updateFields: any = {
+          status: 'paid_leave',
+          note: `半日有給（${halfDayType === 'am' ? '午前' : '午後'}）`,
+          ...(halfDayType === 'am' ? { am_leave: true } : { pm_leave: true }),
+        }
+        if (existing) {
+          await supabase.from('attendance_records').update(updateFields).eq('id', existing.id)
+        } else {
+          await supabase.from('attendance_records').insert({
+            user_id: req.user_id, date,
+            status: 'paid_leave', clock_out_reason: 'normal',
+            early_finish_status: 'not_required',
+            break_minutes: 0, scheduled_minutes: 0, actual_minutes: 0,
+            overtime_minutes: 0, deduction_minutes: 0,
+            late_minutes: 0, early_leave_minutes: 0,
+            ...updateFields,
+          })
+        }
+      } else {
+        if (existing) {
+          await supabase.from('attendance_records').update({
+            status: 'paid_leave',
+            am_clock_in: null, am_clock_out: null,
+            pm_clock_in: null, pm_clock_out: null,
+            clock_in: null, clock_out: null,
+            am_leave: false, pm_leave: false,
+            note: '有給休暇',
+          }).eq('id', existing.id)
+        } else {
+          await supabase.from('attendance_records').insert({
+            user_id: req.user_id, date,
+            status: 'paid_leave', clock_out_reason: 'normal',
+            early_finish_status: 'not_required',
+            break_minutes: 0, scheduled_minutes: 0, actual_minutes: 0,
+            overtime_minutes: 0, deduction_minutes: 0,
+            late_minutes: 0, early_leave_minutes: 0,
+            note: '有給休暇',
+          })
+        }
+      }
+    }
+  }
+
+  // ── 有給取り消し時：attendance_records を欠勤に戻す ──────────
+  const revertLeaveRecords = async (req: LeaveWithProfile) => {
+    if (req.leave_type !== 'paid_leave') return
+    const dates = getBusinessDates(req.start_date, req.end_date)
+    for (const date of dates) {
+      const { data: existing } = await supabase
+        .from('attendance_records')
+        .select('id')
+        .eq('user_id', req.user_id)
+        .eq('date', date)
+        .maybeSingle()
+      if (existing) {
+        await supabase.from('attendance_records').update({
+          status: 'absent',
+          am_leave: false, pm_leave: false,
+          note: '有給取消',
+        }).eq('id', existing.id)
+      }
+    }
+  }
+
   const handleApprove = async (req: LeaveWithProfile) => {
     if (!user) return
+    setSaving(true)
+
     await supabase.from('leave_requests').update({
       status: 'approved', reviewed_by: user.id,
     }).eq('id', req.id)
+
+    // 勤怠記録を paid_leave で自動作成・更新
+    await upsertLeaveRecords(req)
+
+    // used_leave_days をインクリメント
     if (req.leave_type === 'paid_leave') {
-      const { data: p } = await supabase.from('profiles').select('used_leave_days').eq('id', req.user_id).single()
+      const { data: p } = await supabase
+        .from('profiles').select('used_leave_days').eq('id', req.user_id).single()
       await supabase.from('profiles').update({
-        used_leave_days: (p?.used_leave_days ?? 0) + req.days_count
+        used_leave_days: (p?.used_leave_days ?? 0) + req.days_count,
       }).eq('id', req.user_id)
     }
+
+    setSaving(false)
     setReviewingId(null)
     fetchRequests()
   }
 
   const handleReject = async (id: string) => {
+    if (!user) return
+    // 却下前に申請内容を取得（承認済みだった場合の巻き戻し用）
+    const req = requests.find(r => r.id === id)
     await supabase.from('leave_requests').update({
-      status: 'rejected', reviewed_by: user?.id,
+      status: 'rejected', reviewed_by: user.id,
     }).eq('id', id)
+
+    // 承認済みを却下した場合のみ勤怠・残日数を巻き戻し
+    if (req && req.status === 'approved') {
+      await revertLeaveRecords(req)
+      if (req.leave_type === 'paid_leave') {
+        const { data: p } = await supabase
+          .from('profiles').select('used_leave_days').eq('id', req.user_id).single()
+        await supabase.from('profiles').update({
+          used_leave_days: Math.max((p?.used_leave_days ?? 0) - req.days_count, 0),
+        }).eq('id', req.user_id)
+      }
+    }
+
     setReviewingId(null)
     fetchRequests()
   }
@@ -238,10 +356,16 @@ export default function LeavePage() {
     await supabase.from('leave_requests').update({
       status: 'rejected', cancellation_consent: false,
     }).eq('id', req.id)
+
+    // 勤怠記録を欠勤に戻す
+    await revertLeaveRecords(req)
+
+    // used_leave_days を戻す
     if (req.leave_type === 'paid_leave') {
-      const { data: p } = await supabase.from('profiles').select('used_leave_days').eq('id', req.user_id).single()
+      const { data: p } = await supabase
+        .from('profiles').select('used_leave_days').eq('id', req.user_id).single()
       await supabase.from('profiles').update({
-        used_leave_days: Math.max((p?.used_leave_days ?? 0) - req.days_count, 0)
+        used_leave_days: Math.max((p?.used_leave_days ?? 0) - req.days_count, 0),
       }).eq('id', req.user_id)
     }
     fetchRequests()
@@ -590,8 +714,8 @@ export default function LeavePage() {
                   </div>
                   <div className="flex gap-2">
                     <button onClick={() => setReviewingId(null)} className="btn-secondary flex-1 text-sm">閉じる</button>
-                    <button onClick={() => handleReject(req.id)} className="btn-danger flex-1 text-sm">却下</button>
-                    <button onClick={() => handleApprove(req)} className="btn-primary flex-1 text-sm">承認</button>
+                    <button onClick={() => handleReject(req.id)} disabled={saving} className="btn-danger flex-1 text-sm">{saving ? '処理中...' : '却下'}</button>
+                    <button onClick={() => handleApprove(req)} disabled={saving} className="btn-primary flex-1 text-sm">{saving ? '処理中...' : '承認'}</button>
                   </div>
                 </>
               )
