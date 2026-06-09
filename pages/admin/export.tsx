@@ -675,7 +675,9 @@ export default function ExportPage() {
                       ) : <span className="text-gray-300">—</span>}
                     </td>
                   </tr>
-                )})}
+                  )
+                  return rows
+                })}
               </tbody>
             </table>
           </div>
