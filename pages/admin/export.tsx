@@ -94,6 +94,10 @@ function calcAmPmMin(r: any, blocks: any[], amEarlyStartTime?: string, pmEarlySt
         effectivePmIn = shiftPmStart
       }
     }
+  } else if (rawPmIn && !pmBlock && amBlock) {
+    const [sh, sm] = amBlock.start_time.split(':').map(Number)
+    const shiftStart = new Date(`${r.date}T${String(sh).padStart(2,'0')}:${String(sm).padStart(2,'0')}:00+09:00`)
+    if (rawPmIn < shiftStart) effectivePmIn = shiftStart
   }
   if (effectivePmIn && pmOut) pmMin = Math.max(differenceInMinutes(pmOut, effectivePmIn), 0)
   if (!rawPmIn && effectiveAmIn && pmOut && pmMin === 0) {
