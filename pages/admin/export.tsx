@@ -309,7 +309,11 @@ export default function ExportPage() {
       const scheduledMin = calcScheduledMin(blocks)
       const actualMin = calcActualMin(r, blocks, amEarly, pmEarly)
       const lateMin = calcLateMin(r, blocks)
-      const overtimeMin = scheduledMin > 0 ? Math.max(actualMin - scheduledMin, 0) : 0
+      const staffData = staffById[r.user_id]
+      const isPartTime = staffData?.employment_type === 'part_time'
+      const overtimeMin = isPartTime
+        ? (r.overtime_minutes ?? 0)
+        : (scheduledMin > 0 ? Math.max(actualMin - scheduledMin, 0) : 0)
       // 控除計算：早退 or 早上がり否認 or (遅刻かつ所定>実働) のみ
       const isEarlyLeave = r.clock_out_reason === 'early_leave' || r.status === 'early_leave'
       const isEarlyFinishRejected = r.early_finish_status === 'rejected'
