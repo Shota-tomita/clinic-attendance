@@ -171,6 +171,14 @@ function getDeptOrder(deptName: string | undefined | null): number {
   return idx === -1 ? DEPT_ORDER.length : idx
 }
 
+// ─── クリニック固定順 ─────────────────────────────────────────
+const CLINIC_ORDER = ['tomita', 'joyama']
+const CLINIC_LABEL: Record<string, string> = { tomita: '富田眼科', joyama: '城山コンタクト' }
+function getClinicOrder(clinic: string | undefined | null) {
+  const i = CLINIC_ORDER.indexOf(clinic ?? '')
+  return i === -1 ? CLINIC_ORDER.length : i
+}
+
 export default function ExportPage() {
   const { user, profile, loading, isAdmin } = useAuth()
   const router = useRouter()
@@ -265,6 +273,7 @@ export default function ExportPage() {
         staffMap[r.user_id] = {
           name: staff.name,
           department: (staff.departments as any)?.name ?? '—',
+          clinic: (staff as any).clinic ?? 'tomita',
           employment_type: staff.employment_type,
           pay_type: (staff as any).pay_type ?? 'monthly',
           base_salary: staff.base_salary ?? 0,
@@ -412,12 +421,16 @@ export default function ExportPage() {
   }
 
   const sorted = [...preview].sort((a, b) => {
+    // 常にクリニック順を第1キーに
+    const cA = getClinicOrder((a as any).clinic)
+    const cB = getClinicOrder((b as any).clinic)
+    if (cA !== cB) return cA - cB
+
     if (sortKey === 'name') return a.name.localeCompare(b.name, 'ja')
     if (sortKey === 'department') {
       const dA = getDeptOrder(a.department)
       const dB = getDeptOrder(b.department)
       if (dA !== dB) return dA - dB
-      // 部署内：常勤→パート→五十音
       const empA = a.employment_type === 'full_time' ? 0 : 1
       const empB = b.employment_type === 'full_time' ? 0 : 1
       if (empA !== empB) return empA - empB
@@ -562,9 +575,22 @@ export default function ExportPage() {
                   <tr><td colSpan={15} className="text-center py-8 text-gray-400">読込中...</td></tr>
                 ) : sorted.length === 0 ? (
                   <tr><td colSpan={15} className="text-center py-8 text-gray-400">データがありません</td></tr>
-                ) : sorted.map(s => {
+                ) : sorted.flatMap((s, idx) => {
                   const allCustomLabels = Array.from(new Set(sorted.flatMap(s => (s.custom_details ?? []).map((d: any) => d.label)))).sort()
-                  return (
+                  const prevClinic = idx > 0 ? (sorted[idx - 1] as any).clinic : null
+                  const curClinic = (s as any).clinic ?? 'tomita'
+                  const showClinicHeader = curClinic !== prevClinic
+                  const rows = []
+                  if (showClinicHeader) {
+                    rows.push(
+                      <tr key={`clinic-${curClinic}-${idx}`}>
+                        <td colSpan={allCustomLabels.length + 16} className="px-4 py-2 bg-gray-100 text-xs font-semibold text-gray-500 tracking-wide">
+                          🏥 {CLINIC_LABEL[curClinic] ?? curClinic}
+                        </td>
+                      </tr>
+                    )
+                  }
+                  rows.push(
                   <tr key={s.id} className="hover:bg-gray-50">
                     <td className="table-td font-medium">
                       <button
