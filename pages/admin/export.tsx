@@ -467,7 +467,7 @@ export default function ExportPage() {
         }
         // 有給時給
         if (s.paid_leave_amount > 0) {
-          rateCells.push('有給', formatMinutes(s.paid_leave_min ?? 0), `¥${s.paid_leave_amount.toLocaleString()}`, '')
+          rateCells.push('有給（参考・集計不要）', formatMinutes(s.paid_leave_min ?? 0), `¥${s.paid_leave_amount.toLocaleString()}`, '')
         }
       }
       // 最大数まで空白で埋める
