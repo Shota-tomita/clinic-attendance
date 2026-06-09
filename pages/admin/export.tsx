@@ -522,9 +522,21 @@ export default function ExportPage() {
             </h2>
             <span className="text-xs text-gray-400">{preview.length}名</span>
           </div>
-          <div className="overflow-x-auto">
+          {/* 上部スクロールバー */}
+          <div id="export-top-scroll" className="overflow-x-auto" style={{height:'14px'}}
+            onScroll={e => { const b = document.getElementById('export-main-scroll'); if(b) b.scrollLeft=(e.target as HTMLDivElement).scrollLeft }}>
+            <div id="export-top-inner" style={{height:'1px', minWidth:'100%'}} />
+          </div>
+          <div id="export-main-scroll" className="overflow-x-auto"
+            onScroll={e => {
+              const t = document.getElementById('export-top-scroll'); if(t) t.scrollLeft=(e.target as HTMLDivElement).scrollLeft
+              const i = document.getElementById('export-top-inner'); const tbl = (e.target as HTMLDivElement).querySelector('table')
+              if(i && tbl) i.style.width = tbl.offsetWidth+'px'
+            }}
+            ref={el => { if(!el) return; const i=document.getElementById('export-top-inner'); const tbl=el.querySelector('table'); if(i&&tbl) i.style.width=tbl.offsetWidth+'px' }}
+          >
             <table className="w-full text-sm min-w-max">
-              <thead className="bg-gray-50 border-b border-gray-100">
+              <thead className="bg-gray-50 border-b border-gray-100 sticky top-0 z-10">
                 <tr>
                   <th className="table-th">氏名</th>
                   <th className="table-th">部署</th>
@@ -538,27 +550,24 @@ export default function ExportPage() {
                   <th className="table-th">控除</th>
                   <th className="table-th">交通費</th>
                   <th className="table-th">応援交通費</th>
-                  {Array.from(new Set(sorted.flatMap(s => (s.rate_details ?? []).map((d: any) => d.rate)))).sort((a,b)=>a-b).map(rate => (
-                    <th key={rate} className="table-th">¥{rate}/h</th>
-                  ))}
+                  <th className="table-th">時給内訳</th>
                   <th className="table-th">有給時給</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
                 {fetching ? (
-                  <tr><td colSpan={15} className="text-center py-8 text-gray-400">読込中...</td></tr>
+                  <tr><td colSpan={14} className="text-center py-8 text-gray-400">読込中...</td></tr>
                 ) : sorted.length === 0 ? (
-                  <tr><td colSpan={15} className="text-center py-8 text-gray-400">データがありません</td></tr>
+                  <tr><td colSpan={14} className="text-center py-8 text-gray-400">データがありません</td></tr>
                 ) : sorted.flatMap((s, idx) => {
-                  const allRates = Array.from(new Set(sorted.flatMap(s => (s.rate_details ?? []).map((d: any) => d.rate)))).sort((a,b) => a-b)
                   const prevClinic = idx > 0 ? (sorted[idx - 1] as any).clinic : null
                   const curClinic = (s as any).clinic ?? 'tomita'
                   const showClinicHeader = curClinic !== prevClinic
-                  const rows = []
+                  const rows: any[] = []
                   if (showClinicHeader) {
                     rows.push(
                       <tr key={`clinic-${curClinic}-${idx}`}>
-                        <td colSpan={allRates.length + 14} className="px-4 py-2 bg-gray-100 text-xs font-semibold text-gray-500 tracking-wide">
+                        <td colSpan={14} className="px-4 py-2 bg-gray-100 text-xs font-semibold text-gray-500 tracking-wide">
                           🏥 {CLINIC_LABEL[curClinic] ?? curClinic}
                         </td>
                       </tr>
@@ -567,55 +576,37 @@ export default function ExportPage() {
                   rows.push(
                   <tr key={s.id} className="hover:bg-gray-50">
                     <td className="table-td font-medium">
-                      <button
-                        onClick={() => router.push(`/attendance/history?staffId=${s.id}&month=${month}`)}
-                        className="text-clinic-600 hover:text-clinic-700 hover:underline font-medium"
-                      >
+                      <button onClick={() => router.push(`/attendance/history?staffId=${s.id}&month=${month}`)}
+                        className="text-clinic-600 hover:text-clinic-700 hover:underline font-medium">
                         {s.name}
                       </button>
                     </td>
                     <td className="table-td text-xs text-gray-500">{s.department}</td>
-                    <td className="table-td text-xs text-gray-500">
-                      {s.employment_type === 'full_time' ? '正社員' : 'パート'}
-                    </td>
+                    <td className="table-td text-xs text-gray-500">{s.employment_type === 'full_time' ? '正社員' : 'パート'}</td>
                     <td className="table-td">{s.work_days}日</td>
-                    <td className="table-td">
-                      <span className={s.absent_days > 0 ? 'text-red-500 font-medium' : 'text-gray-400'}>
-                        {s.absent_days}日
-                      </span>
-                    </td>
+                    <td className="table-td"><span className={s.absent_days > 0 ? 'text-red-500 font-medium' : 'text-gray-400'}>{s.absent_days}日</span></td>
                     <td className="table-td">{s.paid_leave_days}日</td>
-                    <td className="table-td">
-                      <span className={s.late_count > 0 ? 'text-amber-600 font-medium' : 'text-gray-400'}>
-                        {s.late_count}回
-                      </span>
-                    </td>
+                    <td className="table-td"><span className={s.late_count > 0 ? 'text-amber-600 font-medium' : 'text-gray-400'}>{s.late_count}回</span></td>
                     <td className="table-td">{s.actual_minutes > 0 ? formatMinutes(s.actual_minutes) : '—'}</td>
-                    <td className="table-td text-amber-600">
-                      {s.overtime_minutes > 0 ? formatMinutes(s.overtime_minutes) : '—'}
-                    </td>
-                    <td className="table-td text-red-500">
-                      {s.deduction_minutes > 0 ? formatMinutes(s.deduction_minutes) : '—'}
-                    </td>
-                    <td className="table-td text-clinic-700 font-medium">
-                      {s.transport_fee > 0 ? `¥${s.transport_fee.toLocaleString()}` : '—'}
-                    </td>
+                    <td className="table-td text-amber-600">{s.overtime_minutes > 0 ? formatMinutes(s.overtime_minutes) : '—'}</td>
+                    <td className="table-td text-red-500">{s.deduction_minutes > 0 ? formatMinutes(s.deduction_minutes) : '—'}</td>
+                    <td className="table-td text-clinic-700 font-medium">{s.transport_fee > 0 ? `¥${s.transport_fee.toLocaleString()}` : '—'}</td>
                     <td className="table-td text-clinic-700 font-medium">
                       {s.support_transport_fee > 0 ? `¥${s.support_transport_fee.toLocaleString()}` : <span className="text-gray-300">—</span>}
                     </td>
-                    {allRates.map(rate => {
-                      const d = (s.rate_details ?? []).find((x: any) => x.rate === rate)
-                      return (
-                        <td key={rate} className="table-td text-xs">
-                          {s.pay_type === 'hourly' && d ? (
-                            <div>
-                              <div>{formatMinutes(d.min)}</div>
-                              <div className="text-clinic-600">¥{d.amount.toLocaleString()}</div>
+                    <td className="table-td text-xs min-w-[160px]">
+                      {s.pay_type === 'hourly' && (s.rate_details ?? []).length > 0 ? (
+                        <div className="space-y-1">
+                          {(s.rate_details as {rate:number;min:number;amount:number}[]).sort((a,b)=>a.rate-b.rate).map(d => (
+                            <div key={d.rate} className="flex items-baseline gap-1.5 whitespace-nowrap">
+                              <span className="text-gray-400 text-xs w-[72px] shrink-0">¥{d.rate.toLocaleString()}/h</span>
+                              <span className="text-gray-700 font-medium">{formatMinutes(d.min)}</span>
+                              <span className="text-clinic-600">¥{d.amount.toLocaleString()}</span>
                             </div>
-                          ) : <span className="text-gray-300">—</span>}
-                        </td>
-                      )
-                    })}
+                          ))}
+                        </div>
+                      ) : <span className="text-gray-300">—</span>}
+                    </td>
                     <td className="table-td text-xs">
                       {s.pay_type === 'hourly' && s.paid_leave_amount > 0 ? (
                         <div className="text-emerald-600 font-medium">
