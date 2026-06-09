@@ -48,6 +48,8 @@ export default function StaffPage() {
     leader_can_approve_early_start: false,
     leader_can_approve_early_finish: false,
     leader_can_approve_cancel: false,
+    postal_code: '',
+    address: '',
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -147,6 +149,8 @@ export default function StaffPage() {
       department_id: editForm.department_id || null,
       employment_type: editForm.employment_type,
       annual_leave_days: editForm.annual_leave_days,
+      postal_code: editForm.postal_code || null,
+      address:     editForm.address     || null,
     }
     if (editForm.role === 'leader') {
       update.leader_can_approve_leave        = editForm.leader_can_approve_leave
@@ -204,6 +208,8 @@ export default function StaffPage() {
       leader_can_approve_early_start:  (s as any).leader_can_approve_early_start  ?? false,
       leader_can_approve_early_finish: (s as any).leader_can_approve_early_finish ?? false,
       leader_can_approve_cancel:       (s as any).leader_can_approve_cancel       ?? false,
+      postal_code: (s as any).postal_code ?? '',
+      address:     (s as any).address     ?? '',
     })
   }
 
@@ -357,7 +363,7 @@ export default function StaffPage() {
 
       {editStaff && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-6 space-y-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-6 space-y-4 max-h-[90vh] overflow-y-auto">
             <h2 className="font-semibold text-gray-800">{editStaff.name} の設定変更</h2>
             <div className="grid grid-cols-2 gap-3">
               <div>
@@ -388,6 +394,28 @@ export default function StaffPage() {
                 <label className="label">有給付与日数</label>
                 <input type="number" className="input" min={0} max={40} value={editForm.annual_leave_days}
                   onChange={e => setEditForm(f => ({ ...f, annual_leave_days: Number(e.target.value) }))} />
+              </div>
+            </div>
+            {/* 住所 */}
+            <div className="space-y-2">
+              <div>
+                <label className="label">郵便番号</label>
+                <input
+                  className="input"
+                  value={editForm.postal_code}
+                  onChange={e => setEditForm(f => ({ ...f, postal_code: e.target.value }))}
+                  placeholder="例: 123-4567"
+                  maxLength={8}
+                />
+              </div>
+              <div>
+                <label className="label">住所</label>
+                <input
+                  className="input"
+                  value={editForm.address}
+                  onChange={e => setEditForm(f => ({ ...f, address: e.target.value }))}
+                  placeholder="例: 名古屋市中村区..."
+                />
               </div>
             </div>
             {editForm.role === 'leader' && (
