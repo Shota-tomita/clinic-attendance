@@ -603,25 +603,29 @@ export default function AttendanceHistoryPage() {
     const amBlock = sorted.find((b: any) => b.sort_order === 0)
     const pmBlock = sorted.find((b: any) => b.sort_order === 1)
     const dow = parseISO(r.date).getDay()
-    const isSat = dow === 6
     const isHalfAm = r.am_leave === true
     const isHalfPm = r.pm_leave === true
-    let total = 0
+
+    // その日の全ブロックの時給を収集して最安値を求める
+    const dayRates: number[] = []
+    if (amBlock && !isHalfPm) dayRates.push(getRateType(dow, 'am', staffRates) ?? staffPayInfo.hourly_rate)
+    if (pmBlock && !isHalfAm) dayRates.push(getRateType(dow, 'pm', staffRates) ?? staffPayInfo.hourly_rate)
+    if (dayRates.length === 0) dayRates.push(staffPayInfo.hourly_rate)
+    const minRate = Math.min(...dayRates)
+
+    // 全シフト時間を最安値で計算
+    let totalMin = 0
     if (amBlock && !isHalfPm) {
       const [sh, sm] = amBlock.start_time.split(':').map(Number)
       const [eh, em] = amBlock.end_time.split(':').map(Number)
-      const min = (eh * 60 + em) - (sh * 60 + sm)
-      const rate = getRateType(dow, 'am', staffRates) ?? staffPayInfo.hourly_rate
-      total += Math.round(min / 60 * rate)
+      totalMin += (eh * 60 + em) - (sh * 60 + sm)
     }
     if (pmBlock && !isHalfAm) {
       const [sh, sm] = pmBlock.start_time.split(':').map(Number)
       const [eh, em] = pmBlock.end_time.split(':').map(Number)
-      const min = (eh * 60 + em) - (sh * 60 + sm)
-      const rate = getRateType(dow, 'pm', staffRates) ?? staffPayInfo.hourly_rate
-      total += Math.round(min / 60 * rate)
+      totalMin += (eh * 60 + em) - (sh * 60 + sm)
     }
-    return total
+    return Math.round(totalMin / 60 * minRate)
   }
 
   const summary = {
