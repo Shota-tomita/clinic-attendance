@@ -204,7 +204,7 @@ export default function ExportPage() {
 
     const { data: staffList } = await supabase
       .from('profiles')
-      .select('id, name, employment_type, base_salary, hourly_rate, pay_type, commute_monthly_fee, commute_fee_type, commute_per_trip_fee, departments(name)')
+      .select('id, name, employment_type, base_salary, hourly_rate, pay_type, commute_monthly_fee, commute_fee_type, commute_per_trip_fee, clinic, departments(name)')
       .order('name')
 
     const staffById: Record<string, any> = {}
@@ -675,9 +675,7 @@ export default function ExportPage() {
                       ) : <span className="text-gray-300">—</span>}
                     </td>
                   </tr>
-                  )
-                  return rows
-                })}
+                )})}
               </tbody>
             </table>
           </div>
