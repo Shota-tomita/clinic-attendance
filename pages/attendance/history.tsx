@@ -223,7 +223,9 @@ type AdminEditForm = {
   status: string
   leave_type: 'full' | 'am' | 'pm'  // paid_leave選択時の区分
   clock_out_reason: string
-  overtime_minutes: number
+  overtime_hours: number    // UI用（時間単位）
+  overtime_mins: number     // UI用（分単位）
+  overtime_minutes: number  // DB保存用（合計分）
   note: string
 }
 
@@ -265,7 +267,7 @@ export default function AttendanceHistoryPage() {
   const [adminEditRecord, setAdminEditRecord] = useState<any | null>(null)
   const [adminEditForm, setAdminEditForm] = useState<AdminEditForm>({
     am_clock_in: '', am_clock_out: '', pm_clock_in: '', pm_clock_out: '',
-    status: 'present', leave_type: 'full', clock_out_reason: 'normal', overtime_minutes: 0, note: '',
+    status: 'present', leave_type: 'full', clock_out_reason: 'normal', overtime_hours: 0, overtime_mins: 0, overtime_minutes: 0, note: '',
   })
   const [adminEditSaving, setAdminEditSaving] = useState(false)
   const [adminEditError, setAdminEditError] = useState('')
@@ -423,6 +425,8 @@ export default function AttendanceHistoryPage() {
       leave_type: record.am_leave ? 'am' : record.pm_leave ? 'pm' : 'full',
       clock_out_reason: record.clock_out_reason ?? 'normal',
       overtime_minutes: record.overtime_minutes ?? 0,
+      overtime_hours: Math.floor((record.overtime_minutes ?? 0) / 60),
+      overtime_mins: (record.overtime_minutes ?? 0) % 60,
       note: record.note ?? '',
     })
     setAdminEditError('')
@@ -479,7 +483,7 @@ export default function AttendanceHistoryPage() {
       pm_leave: pmLeave,
       status: adminEditForm.status,
       clock_out_reason: adminEditForm.clock_out_reason,
-      overtime_minutes: adminEditForm.overtime_minutes,
+      overtime_minutes: adminEditForm.overtime_hours * 60 + adminEditForm.overtime_mins,
       note: adminEditForm.note || null,
       early_finish_status: adminEditRecord.early_finish_status ?? 'not_required',
       updated_at: new Date().toISOString(),
@@ -553,8 +557,12 @@ export default function AttendanceHistoryPage() {
     const actualMin = calcActualMin(r, blocks, earlyStartAm, earlyStartPm)
     const lateMin = calcLateMin(r, blocks)
     const { amLate, pmLate } = calcLateMinDetail(r, blocks)
-    // 残業 = 実働 - 所定（マイナスは0）
-    const overtimeMin = scheduledMin > 0 ? Math.max(actualMin - scheduledMin, 0) : 0
+    // 残業計算：パートはDBのovertime_minutesのみ、正社員はシフトベース
+    const staffInfo = staffList.find(s => s.id === r.user_id)
+    const isPartTime = staffInfo?.employment_type === 'part_time'
+    const overtimeMin = isPartTime
+      ? (r.overtime_minutes ?? 0)
+      : (scheduledMin > 0 ? Math.max(actualMin - scheduledMin, 0) : 0)
     // 控除計算：
     // 1. 早退（early_leave）→ 所定-実働
     // 2. 遅刻 かつ 所定>実働 → 所定-実働
@@ -945,30 +953,46 @@ export default function AttendanceHistoryPage() {
                 </select>
               </div>
 
-              {/* メモ */}
-              <div>
-                {staffPayInfo?.pay_type === 'hourly' && (
-                  <div>
-                    <label className="label">時間外（分）</label>
-                    <div className="flex items-center gap-2">
+              {/* 時間外（時給パートのみ） */}
+              {(staffPayInfo?.pay_type === 'hourly' || staffPayInfo === null) && (
+                <div>
+                  <label className="label">時間外</label>
+                  <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1">
                       <input
                         type="number"
-                        className="input w-28"
+                        className="input w-16 text-center"
                         min={0}
-                        max={480}
-                        value={adminEditForm.overtime_minutes}
-                        onChange={e => setAdminEditForm(f => ({ ...f, overtime_minutes: Number(e.target.value) }))}
+                        max={12}
+                        value={adminEditForm.overtime_hours}
+                        onChange={e => setAdminEditForm(f => ({ ...f, overtime_hours: Number(e.target.value) }))}
                         placeholder="0"
                       />
-                      <span className="text-xs text-gray-400">
-                        {adminEditForm.overtime_minutes > 0
-                          ? `（${Math.floor(adminEditForm.overtime_minutes/60)}時間${adminEditForm.overtime_minutes%60}分 × 1.25）`
-                          : 'なし'}
-                      </span>
+                      <span className="text-sm text-gray-500">時間</span>
                     </div>
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        className="input w-16 text-center"
+                        min={0}
+                        max={59}
+                        value={adminEditForm.overtime_mins}
+                        onChange={e => setAdminEditForm(f => ({ ...f, overtime_mins: Number(e.target.value) }))}
+                        placeholder="0"
+                      />
+                      <span className="text-sm text-gray-500">分</span>
+                    </div>
+                    {(adminEditForm.overtime_hours > 0 || adminEditForm.overtime_mins > 0) && (
+                      <span className="text-xs text-amber-600">
+                        × 1.25
+                      </span>
+                    )}
                   </div>
-                )}
-                <div>
+                </div>
+              )}
+
+              {/* メモ */}
+              <div>
                 <label className="label">メモ（任意）</label>
                 <input
                   className="input"
@@ -976,7 +1000,6 @@ export default function AttendanceHistoryPage() {
                   onChange={e => setAdminEditForm(f => ({ ...f, note: e.target.value }))}
                   placeholder="例: 院長による修正"
                 />
-                </div>
               </div>
 
               {/* ボタン */}
