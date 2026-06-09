@@ -433,10 +433,20 @@ export default function ExportPage() {
   const exportCSV = () => {
     setExporting(true)
 
-    // 全スタッフのrate_detailsレートを収集（列を動的に生成）
-    const allRates = Array.from(new Set(
-      sorted.flatMap(s => (s.rate_details ?? []).map((d: any) => d.rate))
-    )).sort((a, b) => a - b)
+    // 時給内訳の最大パターン数（スタッフごとに異なるため最大を求める）
+    const maxRateCount = Math.max(
+      1,
+      ...sorted.map(s => {
+        const details = s.rate_details ?? []
+        const paidCount = (s.pay_type === 'hourly' && s.paid_leave_amount > 0) ? 1 : 0
+        return details.length + paidCount
+      })
+    )
+
+    // ヘッダー：時給内訳は「時給N」「時間N」「金額N」×最大数
+    const rateHeaders = Array.from({ length: maxRateCount }, (_, i) =>
+      [`時給${i + 1}`, `時間${i + 1}`, `金額${i + 1}`, '']
+    ).flat()
 
     const headers = [
       '氏名', '部署', '雇用形態',
@@ -444,16 +454,25 @@ export default function ExportPage() {
       '遅刻回数', '遅刻時間', '早退回数',
       '実働時間', '残業時間', '控除時間', '交通費',
       '応援交通費',
-      ...allRates.flatMap(r => [`¥${r}/h(時間)`, `¥${r}/h(金額)`]),
-      '有給(時間)', '有給時給合計',
+      ...rateHeaders,
     ]
+
     const rows = sorted.map(s => {
-      const rateCols = allRates.flatMap(rate => {
-        const d = (s.rate_details ?? []).find((x: any) => x.rate === rate)
-        return s.pay_type === 'hourly' && d
-          ? [formatMinutes(d.min), `¥${d.amount.toLocaleString()}`]
-          : ['—', '—']
-      })
+      // 時給内訳セルを生成（時給・時間・金額・空白の4セット）
+      const rateCells: string[] = []
+      if (s.pay_type === 'hourly') {
+        const details = [...(s.rate_details ?? [])].sort((a: any, b: any) => a.rate - b.rate)
+        for (const d of details) {
+          rateCells.push(`¥${d.rate.toLocaleString()}/h`, formatMinutes(d.min), `¥${d.amount.toLocaleString()}`, '')
+        }
+        // 有給時給
+        if (s.paid_leave_amount > 0) {
+          rateCells.push('有給', formatMinutes(s.paid_leave_min ?? 0), `¥${s.paid_leave_amount.toLocaleString()}`, '')
+        }
+      }
+      // 最大数まで空白で埋める
+      while (rateCells.length < maxRateCount * 4) rateCells.push('')
+
       return [
         s.name, s.department,
         s.employment_type === 'full_time' ? '正社員' : 'パート',
@@ -462,9 +481,7 @@ export default function ExportPage() {
         formatMinutes(s.actual_minutes), formatMinutes(s.overtime_minutes),
         formatMinutes(s.deduction_minutes), s.transport_fee,
         s.support_transport_fee > 0 ? `¥${s.support_transport_fee.toLocaleString()}` : '—',
-        ...rateCols,
-        s.pay_type === 'hourly' && s.paid_leave_min > 0 ? formatMinutes(s.paid_leave_min) : '—',
-        s.pay_type === 'hourly' && s.paid_leave_amount > 0 ? `¥${s.paid_leave_amount.toLocaleString()}` : '—',
+        ...rateCells,
       ]
     })
     const csv = [
