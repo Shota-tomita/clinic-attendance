@@ -11,6 +11,13 @@ function getDeptOrder(name: string | undefined | null) {
   return i === -1 ? DEPT_ORDER.length : i
 }
 
+const CLINIC_ORDER = ['tomita', 'joyama']
+const CLINIC_LABEL: Record<string, string> = { tomita: '富田眼科', joyama: '城山コンタクト' }
+function getClinicOrder(clinic: string | undefined | null) {
+  const i = CLINIC_ORDER.indexOf(clinic ?? '')
+  return i === -1 ? CLINIC_ORDER.length : i
+}
+
 const roleOptions = [
   { value: 'staff', label: 'スタッフ' },
   { value: 'leader', label: 'リーダー' },
@@ -50,6 +57,7 @@ export default function StaffPage() {
     leader_can_approve_cancel: false,
     postal_code: '',
     address: '',
+    clinic: 'tomita',
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -85,11 +93,16 @@ export default function StaffPage() {
   }
 
   const sortedStaff = [...staff].sort((a, b) => {
+    const clinicA = getClinicOrder((a as any).clinic)
+    const clinicB = getClinicOrder((b as any).clinic)
     const deptA = getDeptOrder((a as any).departments?.name)
     const deptB = getDeptOrder((b as any).departments?.name)
+
+    // 常にクリニック順を第1キーに
+    if (clinicA !== clinicB) return clinicA - clinicB
+
     if (sortKey === 'department') {
       if (deptA !== deptB) return sortOrder === 'asc' ? deptA - deptB : deptB - deptA
-      // 部署内：常勤→パート→名前順
       const empA = a.employment_type === 'full_time' ? 0 : 1
       const empB = b.employment_type === 'full_time' ? 0 : 1
       if (empA !== empB) return sortOrder === 'asc' ? empA - empB : empB - empA
@@ -106,7 +119,6 @@ export default function StaffPage() {
     }
     if (valA < valB) return sortOrder === 'asc' ? -1 : 1
     if (valA > valB) return sortOrder === 'asc' ? 1 : -1
-    // 第2キー：部署順
     return deptA - deptB
   })
 
@@ -151,6 +163,7 @@ export default function StaffPage() {
       annual_leave_days: editForm.annual_leave_days,
       postal_code: editForm.postal_code || null,
       address:     editForm.address     || null,
+      clinic:      editForm.clinic,
     }
     if (editForm.role === 'leader') {
       update.leader_can_approve_leave        = editForm.leader_can_approve_leave
@@ -210,6 +223,7 @@ export default function StaffPage() {
       leader_can_approve_cancel:       (s as any).leader_can_approve_cancel       ?? false,
       postal_code: (s as any).postal_code ?? '',
       address:     (s as any).address     ?? '',
+      clinic:      (s as any).clinic      ?? 'tomita',
     })
   }
 
@@ -269,8 +283,20 @@ export default function StaffPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
-              {sortedStaff.map(s => (
-                <tr key={s.id} className="hover:bg-gray-50">
+              {sortedStaff.map((s, idx) => {
+                const prevClinic = idx > 0 ? (sortedStaff[idx - 1] as any).clinic : null
+                const curClinic = (s as any).clinic ?? 'tomita'
+                const showClinicHeader = curClinic !== prevClinic
+                return (
+                  <>
+                    {showClinicHeader && (
+                      <tr key={`clinic-${curClinic}`}>
+                        <td colSpan={7} className="px-4 py-2 bg-gray-100 text-xs font-semibold text-gray-500 tracking-wide">
+                          🏥 {CLINIC_LABEL[curClinic] ?? curClinic}
+                        </td>
+                      </tr>
+                    )}
+                  <tr key={s.id} className="hover:bg-gray-50">
                   <td className="table-td">
                     <div className="flex items-center gap-2">
                       <div className="w-7 h-7 rounded-full bg-clinic-100 text-clinic-700 flex items-center justify-center text-xs font-bold">
@@ -299,7 +325,9 @@ export default function StaffPage() {
                     </div>
                   </td>
                 </tr>
-              ))}
+                  </>
+                )
+              })}
             </tbody>
           </table>
         </div>
@@ -365,6 +393,15 @@ export default function StaffPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-6 space-y-4 max-h-[90vh] overflow-y-auto">
             <h2 className="font-semibold text-gray-800">{editStaff.name} の設定変更</h2>
+            {/* 所属クリニック */}
+            <div>
+              <label className="label">所属クリニック</label>
+              <select className="select" value={editForm.clinic}
+                onChange={e => setEditForm(f => ({ ...f, clinic: e.target.value }))}>
+                <option value="tomita">富田眼科クリニック</option>
+                <option value="joyama">城山コンタクト</option>
+              </select>
+            </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="label">ロール</label>
