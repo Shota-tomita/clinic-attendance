@@ -179,6 +179,14 @@ function getClinicOrder(clinic: string | undefined | null) {
   return i === -1 ? CLINIC_ORDER.length : i
 }
 
+// 時給額ごとにminを積み上げるヘルパー
+function addRateMin(details: { rate: number; min: number; amount: number }[], rate: number, min: number) {
+  const amount = Math.round(min / 60 * rate)
+  const existing = details.find(d => d.rate === rate)
+  if (existing) { existing.min += min; existing.amount += amount }
+  else details.push({ rate, min, amount })
+}
+
 export default function ExportPage() {
   const { user, profile, loading, isAdmin } = useAuth()
   const router = useRouter()
@@ -287,13 +295,9 @@ export default function ExportPage() {
           commute_per_trip_fee: (staff as any).commute_per_trip_fee ?? 0,
           support_transport_fee: supportFeesByUser[r.user_id] ?? 0,
           // 時給区分別
-          weekday_am_min: 0, weekday_pm_min: 0,
-          saturday_min: 0,
-          weekday_am_amount: 0, weekday_pm_amount: 0,
-          saturday_amount: 0,
           paid_leave_min: 0, paid_leave_amount: 0,
-          // 特定曜日別時給（動的）: { label, min, amount }[]
-          custom_details: [] as { label: string; min: number; amount: number }[],
+          // 時給額ごとの集計: { rate, min, amount }[]
+          rate_details: [] as { rate: number; min: number; amount: number }[],
         }
       }
 
@@ -329,32 +333,28 @@ export default function ExportPage() {
           const rates = ratesByUser[r.user_id] ?? []
           const dow = getDay(parseISO(r.date))
           const { amMin, pmMin } = calcAmPmMin(r, blocks, amEarly, pmEarly)
-          const isSat = dow === 6
-          const WEEKDAYS_JP = ['日','月','火','水','木','金','土']
+          const overtimeMin = r.overtime_minutes ?? 0
 
           if (amMin > 0) {
-            const customRate = rates.find((rt: any) => rt.rate_type === 'custom' && rt.day_of_week === dow && rt.time_slot === 'am')
-            const rate = customRate?.hourly_rate ?? getRateType(dow, 'am', rates) ?? s.hourly_rate
-            const amount = Math.round(amMin / 60 * rate)
-            if (customRate) {
-              const label = `${WEEKDAYS_JP[dow]}曜午前`
-              const existing = s.custom_details.find((d: any) => d.label === label)
-              if (existing) { existing.min += amMin; existing.amount += amount }
-              else s.custom_details.push({ label, min: amMin, amount })
-            } else if (isSat) { s.saturday_min += amMin; s.saturday_amount += amount }
-            else { s.weekday_am_min += amMin; s.weekday_am_amount += amount }
+            const rate = getRateType(dow, 'am', rates) ?? s.hourly_rate
+            // 実働分から時間外を除いた通常分
+            const normalMin = Math.max(amMin - overtimeMin, 0)
+            if (normalMin > 0) addRateMin(s.rate_details, rate, normalMin)
           }
           if (pmMin > 0) {
-            const customRate = rates.find((rt: any) => rt.rate_type === 'custom' && rt.day_of_week === dow && rt.time_slot === 'pm')
-            const rate = customRate?.hourly_rate ?? getRateType(dow, 'pm', rates) ?? s.hourly_rate
-            const amount = Math.round(pmMin / 60 * rate)
-            if (customRate) {
-              const label = `${WEEKDAYS_JP[dow]}曜午後`
-              const existing = s.custom_details.find((d: any) => d.label === label)
-              if (existing) { existing.min += pmMin; existing.amount += amount }
-              else s.custom_details.push({ label, min: pmMin, amount })
-            } else if (isSat) { s.saturday_min += pmMin; s.saturday_amount += amount }
-            else { s.weekday_pm_min += pmMin; s.weekday_pm_amount += amount }
+            const rate = getRateType(dow, 'pm', rates) ?? s.hourly_rate
+            const normalMin = amMin > 0 ? pmMin : Math.max(pmMin - overtimeMin, 0)
+            if (normalMin > 0) addRateMin(s.rate_details, rate, normalMin)
+          }
+          // 時間外分（×1.25）
+          if (overtimeMin > 0) {
+            // 時間外は最後の退勤スロットの時給をベースに
+            const dow2 = getDay(parseISO(r.date))
+            const lastRate = pmMin > 0
+              ? (getRateType(dow2, 'pm', rates) ?? s.hourly_rate)
+              : (getRateType(dow2, 'am', rates) ?? s.hourly_rate)
+            const otRate = Math.round(lastRate * 1.25)
+            addRateMin(s.rate_details, otRate, overtimeMin)
           }
         }
       }
@@ -366,51 +366,33 @@ export default function ExportPage() {
       if (r.status === 'paid_leave') {
         s.paid_leave_days += (r as any).am_leave || (r as any).pm_leave ? 0.5 : 1
 
-        // 時給パートの有給：打刻の有無にかかわらずシフト所定時間で時給計算
+        // 時給パートの有給：シフト所定時間で時給計算
         if (s.pay_type === 'hourly' && blocks.length > 0) {
           const rates = ratesByUser[r.user_id] ?? []
           const dow = getDay(parseISO(r.date))
-          const isSat = dow === 6
           const isHalfAm = (r as any).am_leave === true
           const isHalfPm = (r as any).pm_leave === true
-          const sorted = [...blocks].sort((a: any, b: any) => a.sort_order - b.sort_order)
-          const amBlock = sorted.find((b: any) => b.sort_order === 0)
-          const pmBlock = sorted.find((b: any) => b.sort_order === 1)
-          const WEEKDAYS_JP = ['日','月','火','水','木','金','土']
+          const sortedBlocks = [...blocks].sort((a: any, b: any) => a.sort_order - b.sort_order)
+          const amBlock = sortedBlocks.find((b: any) => b.sort_order === 0)
+          const pmBlock = sortedBlocks.find((b: any) => b.sort_order === 1)
 
           if (amBlock && !isHalfPm) {
             const [sh, sm] = amBlock.start_time.split(':').map(Number)
             const [eh, em] = amBlock.end_time.split(':').map(Number)
             const min = (eh * 60 + em) - (sh * 60 + sm)
-            const customRate = rates.find((rt: any) => rt.rate_type === 'custom' && rt.day_of_week === dow && rt.time_slot === 'am')
-            const rate = customRate?.hourly_rate ?? getRateType(dow, 'am', rates) ?? s.hourly_rate
-            const amount = Math.round(min / 60 * rate)
-            if (customRate) {
-              const label = `${WEEKDAYS_JP[dow]}曜午前`
-              const existing = s.custom_details.find((d: any) => d.label === label)
-              if (existing) { existing.min += min; existing.amount += amount }
-              else s.custom_details.push({ label, min, amount })
-            } else if (isSat) { s.saturday_min += min; s.saturday_amount += amount }
-            else { s.weekday_am_min += min; s.weekday_am_amount += amount }
+            const rate = getRateType(dow, 'am', rates) ?? s.hourly_rate
+            addRateMin(s.rate_details, rate, min)
             s.paid_leave_min = (s.paid_leave_min ?? 0) + min
-            s.paid_leave_amount = (s.paid_leave_amount ?? 0) + amount
+            s.paid_leave_amount = (s.paid_leave_amount ?? 0) + Math.round(min / 60 * rate)
           }
           if (pmBlock && !isHalfAm) {
             const [sh, sm] = pmBlock.start_time.split(':').map(Number)
             const [eh, em] = pmBlock.end_time.split(':').map(Number)
             const min = (eh * 60 + em) - (sh * 60 + sm)
-            const customRate = rates.find((rt: any) => rt.rate_type === 'custom' && rt.day_of_week === dow && rt.time_slot === 'pm')
-            const rate = customRate?.hourly_rate ?? getRateType(dow, 'pm', rates) ?? s.hourly_rate
-            const amount = Math.round(min / 60 * rate)
-            if (customRate) {
-              const label = `${WEEKDAYS_JP[dow]}曜午後`
-              const existing = s.custom_details.find((d: any) => d.label === label)
-              if (existing) { existing.min += min; existing.amount += amount }
-              else s.custom_details.push({ label, min, amount })
-            } else if (isSat) { s.saturday_min += min; s.saturday_amount += amount }
-            else { s.weekday_pm_min += min; s.weekday_pm_amount += amount }
+            const rate = getRateType(dow, 'pm', rates) ?? s.hourly_rate
+            addRateMin(s.rate_details, rate, min)
             s.paid_leave_min = (s.paid_leave_min ?? 0) + min
-            s.paid_leave_amount = (s.paid_leave_amount ?? 0) + amount
+            s.paid_leave_amount = (s.paid_leave_amount ?? 0) + Math.round(min / 60 * rate)
           }
         }
       }
@@ -443,10 +425,10 @@ export default function ExportPage() {
   const exportCSV = () => {
     setExporting(true)
 
-    // 全スタッフのcustom_detailsラベルを収集（列を動的に生成）
-    const allCustomLabels = Array.from(new Set(
-      sorted.flatMap(s => (s.custom_details ?? []).map((d: any) => d.label))
-    )).sort()
+    // 全スタッフのrate_detailsレートを収集（列を動的に生成）
+    const allRates = Array.from(new Set(
+      sorted.flatMap(s => (s.rate_details ?? []).map((d: any) => d.rate))
+    )).sort((a, b) => a - b)
 
     const headers = [
       '氏名', '部署', '雇用形態',
@@ -454,15 +436,12 @@ export default function ExportPage() {
       '遅刻回数', '遅刻時間', '早退回数',
       '実働時間', '残業時間', '控除時間', '交通費',
       '応援交通費',
-      '平日午前(時間)', '平日午前(金額)',
-      '平日午後(時間)', '平日午後(金額)',
-      '土曜(時間)', '土曜(金額)',
-      ...allCustomLabels.flatMap(l => [`${l}(時間)`, `${l}(金額)`]),
+      ...allRates.flatMap(r => [`¥${r}/h(時間)`, `¥${r}/h(金額)`]),
       '有給(時間)', '有給時給合計',
     ]
     const rows = sorted.map(s => {
-      const customCols = allCustomLabels.flatMap(label => {
-        const d = (s.custom_details ?? []).find((x: any) => x.label === label)
+      const rateCols = allRates.flatMap(rate => {
+        const d = (s.rate_details ?? []).find((x: any) => x.rate === rate)
         return s.pay_type === 'hourly' && d
           ? [formatMinutes(d.min), `¥${d.amount.toLocaleString()}`]
           : ['—', '—']
@@ -475,13 +454,7 @@ export default function ExportPage() {
         formatMinutes(s.actual_minutes), formatMinutes(s.overtime_minutes),
         formatMinutes(s.deduction_minutes), s.transport_fee,
         s.support_transport_fee > 0 ? `¥${s.support_transport_fee.toLocaleString()}` : '—',
-        s.pay_type === 'hourly' ? formatMinutes(s.weekday_am_min) : '—',
-        s.pay_type === 'hourly' ? `¥${s.weekday_am_amount.toLocaleString()}` : '—',
-        s.pay_type === 'hourly' ? formatMinutes(s.weekday_pm_min) : '—',
-        s.pay_type === 'hourly' ? `¥${s.weekday_pm_amount.toLocaleString()}` : '—',
-        s.pay_type === 'hourly' ? formatMinutes(s.saturday_min) : '—',
-        s.pay_type === 'hourly' ? `¥${s.saturday_amount.toLocaleString()}` : '—',
-        ...customCols,
+        ...rateCols,
         s.pay_type === 'hourly' && s.paid_leave_min > 0 ? formatMinutes(s.paid_leave_min) : '—',
         s.pay_type === 'hourly' && s.paid_leave_amount > 0 ? `¥${s.paid_leave_amount.toLocaleString()}` : '—',
       ]
@@ -561,11 +534,8 @@ export default function ExportPage() {
                   <th className="table-th">控除</th>
                   <th className="table-th">交通費</th>
                   <th className="table-th">応援交通費</th>
-                  <th className="table-th">平日午前</th>
-                  <th className="table-th">平日午後</th>
-                  <th className="table-th">土曜</th>
-                  {Array.from(new Set(sorted.flatMap(s => (s.custom_details ?? []).map((d: any) => d.label)))).sort().map(label => (
-                    <th key={label} className="table-th">{label}</th>
+                  {Array.from(new Set(sorted.flatMap(s => (s.rate_details ?? []).map((d: any) => d.rate)))).sort((a,b)=>a-b).map(rate => (
+                    <th key={rate} className="table-th">¥{rate}/h</th>
                   ))}
                   <th className="table-th">有給時給</th>
                 </tr>
@@ -576,7 +546,7 @@ export default function ExportPage() {
                 ) : sorted.length === 0 ? (
                   <tr><td colSpan={15} className="text-center py-8 text-gray-400">データがありません</td></tr>
                 ) : sorted.flatMap((s, idx) => {
-                  const allCustomLabels = Array.from(new Set(sorted.flatMap(s => (s.custom_details ?? []).map((d: any) => d.label)))).sort()
+                  const allRates = Array.from(new Set(sorted.flatMap(s => (s.rate_details ?? []).map((d: any) => d.rate)))).sort((a,b) => a-b)
                   const prevClinic = idx > 0 ? (sorted[idx - 1] as any).clinic : null
                   const curClinic = (s as any).clinic ?? 'tomita'
                   const showClinicHeader = curClinic !== prevClinic
@@ -584,7 +554,7 @@ export default function ExportPage() {
                   if (showClinicHeader) {
                     rows.push(
                       <tr key={`clinic-${curClinic}-${idx}`}>
-                        <td colSpan={allCustomLabels.length + 16} className="px-4 py-2 bg-gray-100 text-xs font-semibold text-gray-500 tracking-wide">
+                        <td colSpan={allRates.length + 14} className="px-4 py-2 bg-gray-100 text-xs font-semibold text-gray-500 tracking-wide">
                           🏥 {CLINIC_LABEL[curClinic] ?? curClinic}
                         </td>
                       </tr>
@@ -629,34 +599,10 @@ export default function ExportPage() {
                     <td className="table-td text-clinic-700 font-medium">
                       {s.support_transport_fee > 0 ? `¥${s.support_transport_fee.toLocaleString()}` : <span className="text-gray-300">—</span>}
                     </td>
-                    <td className="table-td text-xs">
-                      {s.pay_type === 'hourly' && s.weekday_am_min > 0 ? (
-                        <div>
-                          <div>{formatMinutes(s.weekday_am_min)}</div>
-                          <div className="text-clinic-600">¥{s.weekday_am_amount.toLocaleString()}</div>
-                        </div>
-                      ) : <span className="text-gray-300">—</span>}
-                    </td>
-                    <td className="table-td text-xs">
-                      {s.pay_type === 'hourly' && s.weekday_pm_min > 0 ? (
-                        <div>
-                          <div>{formatMinutes(s.weekday_pm_min)}</div>
-                          <div className="text-clinic-600">¥{s.weekday_pm_amount.toLocaleString()}</div>
-                        </div>
-                      ) : <span className="text-gray-300">—</span>}
-                    </td>
-                    <td className="table-td text-xs">
-                      {s.pay_type === 'hourly' && s.saturday_min > 0 ? (
-                        <div>
-                          <div>{formatMinutes(s.saturday_min)}</div>
-                          <div className="text-clinic-600">¥{s.saturday_amount.toLocaleString()}</div>
-                        </div>
-                      ) : <span className="text-gray-300">—</span>}
-                    </td>
-                    {allCustomLabels.map(label => {
-                      const d = (s.custom_details ?? []).find((x: any) => x.label === label)
+                    {allRates.map(rate => {
+                      const d = (s.rate_details ?? []).find((x: any) => x.rate === rate)
                       return (
-                        <td key={label} className="table-td text-xs">
+                        <td key={rate} className="table-td text-xs">
                           {s.pay_type === 'hourly' && d ? (
                             <div>
                               <div>{formatMinutes(d.min)}</div>
