@@ -374,7 +374,7 @@ export default function ExportPage() {
       if (r.status === 'paid_leave') {
         s.paid_leave_days += (r as any).am_leave || (r as any).pm_leave ? 0.5 : 1
 
-        // 時給パートの有給：シフト所定時間で時給計算
+        // 時給パートの有給：その日のシフト全時間をその日の最安値時給で計算
         if (s.pay_type === 'hourly' && blocks.length > 0) {
           const rates = ratesByUser[r.user_id] ?? []
           const dow = getDay(parseISO(r.date))
@@ -384,23 +384,34 @@ export default function ExportPage() {
           const amBlock = sortedBlocks.find((b: any) => b.sort_order === 0)
           const pmBlock = sortedBlocks.find((b: any) => b.sort_order === 1)
 
+          // その日の全ブロックの時給を収集して最安値を求める
+          const dayRates: number[] = []
+          if (amBlock && !isHalfPm) {
+            dayRates.push(getRateType(dow, 'am', rates) ?? s.hourly_rate)
+          }
+          if (pmBlock && !isHalfAm) {
+            dayRates.push(getRateType(dow, 'pm', rates) ?? s.hourly_rate)
+          }
+          if (dayRates.length === 0) dayRates.push(s.hourly_rate)
+          const minRate = Math.min(...dayRates)
+
+          // 全シフト時間を最安値で計算
+          let totalMin = 0
           if (amBlock && !isHalfPm) {
             const [sh, sm] = amBlock.start_time.split(':').map(Number)
             const [eh, em] = amBlock.end_time.split(':').map(Number)
-            const min = (eh * 60 + em) - (sh * 60 + sm)
-            const rate = getRateType(dow, 'am', rates) ?? s.hourly_rate
-            addRateMin(s.rate_details, rate, min)
-            s.paid_leave_min = (s.paid_leave_min ?? 0) + min
-            s.paid_leave_amount = (s.paid_leave_amount ?? 0) + Math.round(min / 60 * rate)
+            totalMin += (eh * 60 + em) - (sh * 60 + sm)
           }
           if (pmBlock && !isHalfAm) {
             const [sh, sm] = pmBlock.start_time.split(':').map(Number)
             const [eh, em] = pmBlock.end_time.split(':').map(Number)
-            const min = (eh * 60 + em) - (sh * 60 + sm)
-            const rate = getRateType(dow, 'pm', rates) ?? s.hourly_rate
-            addRateMin(s.rate_details, rate, min)
-            s.paid_leave_min = (s.paid_leave_min ?? 0) + min
-            s.paid_leave_amount = (s.paid_leave_amount ?? 0) + Math.round(min / 60 * rate)
+            totalMin += (eh * 60 + em) - (sh * 60 + sm)
+          }
+
+          if (totalMin > 0) {
+            addRateMin(s.rate_details, minRate, totalMin)
+            s.paid_leave_min = (s.paid_leave_min ?? 0) + totalMin
+            s.paid_leave_amount = (s.paid_leave_amount ?? 0) + Math.round(totalMin / 60 * minRate)
           }
         }
       }
