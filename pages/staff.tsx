@@ -37,6 +37,35 @@ const roleBadge = (role: string) => ({
 
 const roleLabel = (role: string) => ({ admin: '院長', leader: 'リーダー', staff: 'スタッフ' }[role] ?? role)
 
+// 有給付与計算ユーティリティ
+const FULL_TIME_TABLE: Record<number,number> = {6:10,18:11,30:12,42:14,54:16,66:18,78:20}
+const PART_TIME_TABLE: Record<number,Record<number,number>> = {
+  4:{6:7,18:8,30:9,42:10,54:12,66:13,78:15},
+  3:{6:5,18:6,30:6,42:8,54:9,66:10,78:11},
+  2:{6:3,18:4,30:4,42:5,54:6,66:6,78:7},
+  1:{6:1,18:2,30:2,42:2,54:3,66:3,78:3},
+}
+function calcGrantDays(empType: string, weekDays: number, tenureMonths: number): number {
+  const table = empType === 'full_time' ? FULL_TIME_TABLE : (PART_TIME_TABLE[Math.min(weekDays,4)] ?? PART_TIME_TABLE[1])
+  const thresholds = Object.keys(table).map(Number).sort((a,b) => a-b)
+  let days = 0
+  for (const t of thresholds) { if (tenureMonths >= t) days = table[t] }
+  return days
+}
+function calcNextGrantDate(hireDate: string): Date {
+  const hire = new Date(hireDate)
+  const next = new Date(hire)
+  next.setMonth(next.getMonth() + 6)
+  const today = new Date()
+  while (next <= today) next.setFullYear(next.getFullYear() + 1)
+  return next
+}
+function calcTenureMonths(hireDate: string): number {
+  const hire = new Date(hireDate)
+  const today = new Date()
+  return (today.getFullYear()-hire.getFullYear())*12 + (today.getMonth()-hire.getMonth())
+}
+
 export default function StaffPage() {
   const { user, profile, loading, isAdmin } = useAuth()
   const router = useRouter()
@@ -50,6 +79,7 @@ export default function StaffPage() {
   const [inviteForm, setInviteForm] = useState({ email: '', name: '', role: 'staff', department_id: '', employment_type: 'full_time', annual_leave_days: 10 })
   const [editForm, setEditForm] = useState({
     role: 'staff', department_id: '', employment_type: 'full_time', annual_leave_days: 10,
+    weekly_work_days: 5,
     leader_can_approve_leave: false,
     leader_can_approve_correction: false,
     leader_can_approve_early_start: false,
@@ -79,6 +109,8 @@ export default function StaffPage() {
     if (profile) {
       fetchStaff()
       fetchDepartments()
+      // 有給付与チェック（付与日を迎えたスタッフを自動更新）
+      fetch('/api/leave-grant', { method: 'POST' }).catch(() => {})
     }
   }, [profile])
 
@@ -161,6 +193,7 @@ export default function StaffPage() {
       department_id: editForm.department_id || null,
       employment_type: editForm.employment_type,
       annual_leave_days: editForm.annual_leave_days,
+      weekly_work_days: editForm.weekly_work_days,
       postal_code: editForm.postal_code || null,
       address:     editForm.address     || null,
       clinic:      editForm.clinic,
@@ -216,6 +249,7 @@ export default function StaffPage() {
       department_id: s.department_id ?? '',
       employment_type: s.employment_type,
       annual_leave_days: s.annual_leave_days,
+      weekly_work_days: (s as any).weekly_work_days ?? 5,
       leader_can_approve_leave:        (s as any).leader_can_approve_leave        ?? false,
       leader_can_approve_correction:   (s as any).leader_can_approve_correction   ?? false,
       leader_can_approve_early_start:  (s as any).leader_can_approve_early_start  ?? false,
@@ -316,6 +350,18 @@ export default function StaffPage() {
                   <td className="table-td">
                     <span className="text-clinic-600 font-medium">{s.annual_leave_days - s.used_leave_days}</span>
                     <span className="text-gray-400 text-xs">/{s.annual_leave_days}日</span>
+                    {(s as any).hire_date && (() => {
+                      const next = calcNextGrantDate((s as any).hire_date)
+                      const months = calcTenureMonths((s as any).hire_date)
+                      const grant = calcGrantDays(s.employment_type, (s as any).weekly_work_days ?? 5, months + 12)
+                      const diffDays = Math.ceil((next.getTime() - new Date().getTime()) / 86400000)
+                      return (
+                        <div className="text-xs text-gray-400 mt-0.5">
+                          次回付与: {next.toLocaleDateString('ja-JP', {month:'numeric',day:'numeric'})}
+                          （{diffDays}日後・{grant}日）
+                        </div>
+                      )
+                    })()}
                   </td>
                   <td className="table-td">
                     <div className="flex gap-1">
@@ -433,6 +479,20 @@ export default function StaffPage() {
                   onChange={e => setEditForm(f => ({ ...f, annual_leave_days: Number(e.target.value) }))} />
               </div>
             </div>
+            {/* 週所定労働日数（パートのみ） */}
+            {editForm.employment_type !== 'full_time' && (
+              <div>
+                <label className="label">週所定労働日数</label>
+                <select className="select" value={editForm.weekly_work_days}
+                  onChange={e => setEditForm(f => ({ ...f, weekly_work_days: Number(e.target.value) }))}>
+                  <option value={1}>週1日</option>
+                  <option value={2}>週2日</option>
+                  <option value={3}>週3日</option>
+                  <option value={4}>週4日</option>
+                  <option value={5}>週5日以上</option>
+                </select>
+              </div>
+            )}
             {/* 住所 */}
             <div className="space-y-2">
               <div>
