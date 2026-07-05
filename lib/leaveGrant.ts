@@ -76,6 +76,8 @@ export async function processLeaveGrants(supabase: ReturnType<typeof createClien
 
   for (const staff of staffList) {
     if (!staff.hire_date) continue
+    // 週所定0日（月数回スタッフ）は付与対象外
+    if ((staff.weekly_work_days ?? 0) === 0) continue
 
     const nextGrant = staff.next_leave_grant_date
       ? new Date(staff.next_leave_grant_date)
