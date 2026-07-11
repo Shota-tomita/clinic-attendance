@@ -636,6 +636,7 @@ export default function AttendanceHistoryPage() {
     absentDays: computedRecords.filter(r => r.status === 'absent').length,
     paidLeave: computedRecords.filter(r => r.status === 'paid_leave').length,
     actualMin: computedRecords.reduce((s, r) => s + r._actualMin, 0),
+    scheduledMin: computedRecords.reduce((s, r) => s + (r._scheduledMin ?? 0), 0),
     pendingApprovals: computedRecords.filter(r => r.early_finish_status === 'pending').length,
     paidLeaveAmount: computedRecords
       .filter(r => r.status === 'paid_leave')
@@ -1067,6 +1068,7 @@ export default function AttendanceHistoryPage() {
               <SummaryRow label="欠勤日数" value={`${summary.absentDays}日`} highlight={summary.absentDays > 0 ? 'text-red-500' : undefined} />
               <SummaryRow label="有給取得" value={`${summary.paidLeave}日`} />
               <SummaryRow label="遅刻回数" value={`${summary.lateCount}回`} highlight={summary.lateCount > 0 ? 'text-amber-600' : undefined} />
+              <SummaryRow label="所定合計" value={summary.scheduledMin > 0 ? formatMinutes(summary.scheduledMin) : '—'} />
               <SummaryRow label="実働合計" value={summary.actualMin > 0 ? formatMinutes(summary.actualMin) : '—'} />
               <SummaryRow label="残業合計" value={summary.overtimeMin > 0 ? formatMinutes(summary.overtimeMin) : '—'} highlight={summary.overtimeMin > 0 ? 'text-amber-600' : undefined} />
               <SummaryRow label="控除合計" value={summary.deductionMin > 0 ? formatMinutes(summary.deductionMin) : '—'} highlight={summary.deductionMin > 0 ? 'text-red-500' : undefined} />
