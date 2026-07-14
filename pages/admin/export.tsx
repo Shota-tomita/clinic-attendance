@@ -281,6 +281,19 @@ export default function ExportPage() {
       if (h.start_time) holidayWorkMap[`${h.user_id}_${h.date}`] = h.start_time
     }
 
+    // 承認済み遅延申請を取得 → delayApprovedMap[userId_date] = 承認済み免除分数
+    const { data: delayRequests } = await supabase
+      .from('delay_requests')
+      .select('user_id, date, approved_minutes')
+      .eq('status', 'approved')
+      .gte('date', start)
+      .lte('date', end)
+
+    const delayApprovedMap: Record<string, number> = {}
+    for (const d of delayRequests ?? []) {
+      delayApprovedMap[`${d.user_id}_${d.date}`] = d.approved_minutes ?? 0
+    }
+
     // 休日出勤の実働計算：承認された始業時刻を基準に計算
     function calcHolidayActualMin(r: any, approvedStartTime: string): number {
       const amIn = r.am_clock_in ? parseISO(r.am_clock_in) : null
@@ -365,18 +378,21 @@ export default function ExportPage() {
       } else {
         scheduledMin = calcScheduledMin(blocks)
         actualMin = calcActualMin(r, blocks, amEarly, pmEarly)
-        lateMin = calcLateMin(r, blocks)
+        const rawLateMin = calcLateMin(r, blocks)
+        // 遅延申請で承認された分数を遅刻時間から差し引く
+        const delayApproved = delayApprovedMap[`${r.user_id}_${r.date}`] ?? 0
+        lateMin = Math.max(rawLateMin - delayApproved, 0)
         overtimeMin = isPartTime
           ? (r.overtime_minutes ?? 0)
           : (scheduledMin > 0 ? Math.max(actualMin - scheduledMin, 0) : 0)
-        // 控除計算：早退 or 早上がり否認 or (遅刻かつ所定>実働) のみ
+        // 控除計算（遅刻分・早退分を別々に算出し、不足時間を超えないようキャップ）
         const isEarlyLeave = r.clock_out_reason === 'early_leave' || r.status === 'early_leave'
         const isEarlyFinishRejected = r.early_finish_status === 'rejected'
-        const hasLate = lateMin > 0
-        const isShort = scheduledMin > 0 && actualMin < scheduledMin
-        deductionMin = (isEarlyLeave || isEarlyFinishRejected || (hasLate && isShort))
-          ? Math.max(scheduledMin - actualMin, 0)
-          : 0
+        const shortfall = Math.max(scheduledMin - actualMin, 0)
+        const lateDeductionMin = (shortfall > 0 && lateMin > 0) ? Math.min(lateMin, shortfall) : 0
+        const remainingShortfall = Math.max(shortfall - lateDeductionMin, 0)
+        const earlyLeaveDeductionMin = (isEarlyLeave || isEarlyFinishRejected) ? remainingShortfall : 0
+        deductionMin = lateDeductionMin + earlyLeaveDeductionMin
       }
 
       if (['present','late','early_leave'].includes(r.status)) {
