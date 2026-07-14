@@ -284,6 +284,7 @@ export default function AttendanceHistoryPage() {
   const [shiftMap, setShiftMap] = useState<Record<string, any[]>>({})
   const [earlyStartMap, setEarlyStartMap] = useState<Record<string, { am?: string, pm?: string }>>({}) // date -> {am, pm}
   const [holidayWorkMap, setHolidayWorkMap] = useState<Record<string, string>>({}) // date -> start_time（承認済み休日出勤）
+  const [delayApprovedMap, setDelayApprovedMap] = useState<Record<string, number>>({}) // date -> 承認済み遅延免除分数
   const [staffList, setStaffList] = useState<Profile[]>([])
   const [selectedStaffId, setSelectedStaffId] = useState('')
   const [fetching, setFetching] = useState(false)
@@ -328,6 +329,7 @@ export default function AttendanceHistoryPage() {
       fetchShifts()
       fetchEarlyStarts()
       fetchHolidayWork()
+      fetchDelayRequests()
     }
   }, [selectedStaffId, month])
 
@@ -416,6 +418,23 @@ export default function AttendanceHistoryPage() {
       if (d.start_time) map[d.date] = d.start_time
     }
     setHolidayWorkMap(map)
+  }
+
+  const fetchDelayRequests = async () => {
+    if (!selectedStaffId) return
+    const { start, end } = getMonthRange(month)
+    const { data } = await supabase
+      .from('delay_requests')
+      .select('date, approved_minutes')
+      .eq('user_id', selectedStaffId)
+      .eq('status', 'approved')
+      .gte('date', start)
+      .lte('date', end)
+    const map: Record<string, number> = {}
+    for (const d of data ?? []) {
+      map[d.date] = d.approved_minutes ?? 0
+    }
+    setDelayApprovedMap(map)
   }
 
   const fetchShifts = async () => {
@@ -617,27 +636,28 @@ export default function AttendanceHistoryPage() {
 
     const scheduledMin = calcScheduledMinWithHalfLeave(r, blocks)
     const actualMin = calcActualMin(r, blocks, earlyStartAm, earlyStartPm)
-    const lateMin = calcLateMin(r, blocks)
+    const rawLateMin = calcLateMin(r, blocks)
     const { amLate, pmLate } = calcLateMinDetail(r, blocks)
+    // 遅延申請で承認された分数を遅刻時間から差し引く（電車遅延など）
+    const delayApproved = delayApprovedMap[r.date] ?? 0
+    const lateMin = Math.max(rawLateMin - delayApproved, 0)
     // 残業計算：パートはDBのovertime_minutesのみ、正社員はシフトベース
     const staffInfo = staffList.find(s => s.id === r.user_id)
     const isPartTime = staffInfo?.employment_type === 'part_time'
     const overtimeMin = isPartTime
       ? (r.overtime_minutes ?? 0)
       : (scheduledMin > 0 ? Math.max(actualMin - scheduledMin, 0) : 0)
-    // 控除計算：
-    // 1. 早退（early_leave）→ 所定-実働
-    // 2. 遅刻 かつ 所定>実働 → 所定-実働
-    // 3. 早上がり否認（rejected）→ 所定-実働
-    // 4. それ以外 → 控除0
+    // 控除計算（遅刻分と早退分を別々に算出し、実際の不足時間を超えないようキャップする）：
+    // ・実働が所定より短い場合のみ遅刻分を控除（rule②③）
+    // ・早退（early_leave）／早上がり否認は既存のフラグベースで控除
     const isEarlyLeave = r.clock_out_reason === 'early_leave' || r.status === 'early_leave'
     const isEarlyFinishRejected = r.early_finish_status === 'rejected'
-    const hasLate = lateMin > 0
-    const isShort = scheduledMin > 0 && actualMin < scheduledMin
-    const deductionMin = (isEarlyLeave || isEarlyFinishRejected || (hasLate && isShort))
-      ? Math.max(scheduledMin - actualMin, 0)
-      : 0
-    return { ...r, _scheduledMin: scheduledMin, _actualMin: actualMin, _lateMin: lateMin, _amLate: amLate, _pmLate: pmLate, _overtimeMin: overtimeMin, _deductionMin: deductionMin, _isHolidayWork: false }
+    const shortfall = Math.max(scheduledMin - actualMin, 0)
+    const lateDeductionMin = (shortfall > 0 && lateMin > 0) ? Math.min(lateMin, shortfall) : 0
+    const remainingShortfall = Math.max(shortfall - lateDeductionMin, 0)
+    const earlyLeaveDeductionMin = (isEarlyLeave || isEarlyFinishRejected) ? remainingShortfall : 0
+    const deductionMin = lateDeductionMin + earlyLeaveDeductionMin
+    return { ...r, _scheduledMin: scheduledMin, _actualMin: actualMin, _lateMin: lateMin, _rawLateMin: rawLateMin, _amLate: amLate, _pmLate: pmLate, _overtimeMin: overtimeMin, _deductionMin: deductionMin, _isHolidayWork: false }
   })
 
   // 院長用：月の全日付を生成（レコードなし日にも直接入力ボタンを表示するため）
