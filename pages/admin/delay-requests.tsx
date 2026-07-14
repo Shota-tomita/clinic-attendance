@@ -26,6 +26,14 @@ export default function AdminDelayRequestsPage() {
   const [certUrl, setCertUrl] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [filter, setFilter] = useState<'pending' | 'all'>('pending')
+  const [staffList, setStaffList] = useState<any[]>([])
+  const [showDirectForm, setShowDirectForm] = useState(false)
+  const [directForm, setDirectForm] = useState({
+    user_id: '',
+    date: '',
+    approved_minutes: '',
+    admin_note: '',
+  })
 
   useEffect(() => {
     if (!loading && !user) router.replace('/login')
@@ -33,7 +41,7 @@ export default function AdminDelayRequestsPage() {
   }, [user, loading, profile, isAdmin])
 
   useEffect(() => {
-    if (isAdmin) { fetchRequests(); fetchStaffNames() }
+    if (isAdmin) { fetchRequests(); fetchStaffNames(); fetchStaffList() }
   }, [isAdmin])
 
   const fetchRequests = async () => {
@@ -49,6 +57,11 @@ export default function AdminDelayRequestsPage() {
     const map: Record<string, string> = {}
     for (const p of data ?? []) map[p.id] = p.name
     setStaffNames(map)
+  }
+
+  const fetchStaffList = async () => {
+    const { data } = await supabase.from('profiles').select('*').neq('role', 'admin').order('name')
+    setStaffList(data ?? [])
   }
 
   const openReview = async (req: any) => {
@@ -92,6 +105,30 @@ export default function AdminDelayRequestsPage() {
     fetchRequests()
   }
 
+  // 管理者が申請なしで直接、遅刻を打ち消す（承認済みとして登録）
+  const handleDirectRegister = async () => {
+    if (!directForm.user_id || !directForm.date || directForm.approved_minutes === '') {
+      alert('スタッフ・日付・免除分数を入力してください')
+      return
+    }
+    setSaving(true)
+    await supabase.from('delay_requests').upsert({
+      user_id: directForm.user_id,
+      date: directForm.date,
+      requested_minutes: Number(directForm.approved_minutes),
+      approved_minutes: Number(directForm.approved_minutes),
+      reason: '院長による直接登録（申請なし）',
+      status: 'approved',
+      reviewed_by: user!.id,
+      reviewed_at: new Date().toISOString(),
+      admin_note: directForm.admin_note || null,
+    }, { onConflict: 'user_id,date' })
+    setSaving(false)
+    setShowDirectForm(false)
+    setDirectForm({ user_id: '', date: '', approved_minutes: '', admin_note: '' })
+    fetchRequests()
+  }
+
   const filtered = requests.filter(r => filter === 'all' || r.status === 'pending')
   const pendingCount = requests.filter(r => r.status === 'pending').length
 
@@ -110,6 +147,7 @@ export default function AdminDelayRequestsPage() {
             {pendingCount > 0 && <p className="text-xs text-amber-600 mt-0.5">⚠️ 審査待ち {pendingCount}件</p>}
           </div>
           <div className="flex gap-2">
+            <button onClick={() => setShowDirectForm(true)} className="btn-secondary text-sm">＋ 直接打ち消し</button>
             {(['pending', 'all'] as const).map(f => (
               <button key={f} onClick={() => setFilter(f)}
                 className={`text-xs px-3 py-1.5 rounded-lg border font-medium transition-all
@@ -122,6 +160,7 @@ export default function AdminDelayRequestsPage() {
 
         <p className="text-xs text-gray-400 -mt-3">
           承認した分数だけ、その日の遅刻時間から控除されます。残った遅刻時間があれば遅刻回数としてカウントされます。
+          申請がなくても「＋直接打ち消し」から管理者が遅刻を打ち消せます。
         </p>
 
         <div className="card p-0 overflow-hidden">
@@ -197,6 +236,49 @@ export default function AdminDelayRequestsPage() {
           </div>
         )
       })()}
+
+      {/* 直接打ち消しモーダル（申請なし） */}
+      {showDirectForm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-6 space-y-4">
+            <h2 className="font-semibold text-gray-800">遅刻を直接打ち消す（申請なし）</h2>
+            <p className="text-xs text-gray-400">
+              スタッフからの申請がなくても、管理者の判断で遅刻分を打ち消せます。
+            </p>
+            <div>
+              <label className="label">スタッフ</label>
+              <select className="select" value={directForm.user_id}
+                onChange={e => setDirectForm(f => ({ ...f, user_id: e.target.value }))}>
+                <option value="">— 選択してください —</option>
+                {staffList.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="label">日付</label>
+              <input type="date" className="input" value={directForm.date}
+                onChange={e => setDirectForm(f => ({ ...f, date: e.target.value }))} />
+            </div>
+            <div>
+              <label className="label">打ち消す分数（遅刻時間から控除する分数）</label>
+              <input type="number" className="input" value={directForm.approved_minutes}
+                onChange={e => setDirectForm(f => ({ ...f, approved_minutes: e.target.value }))}
+                placeholder="例: 15（大きい値にすれば全て打ち消せます）" />
+            </div>
+            <div>
+              <label className="label">コメント（任意）</label>
+              <input className="input" value={directForm.admin_note}
+                onChange={e => setDirectForm(f => ({ ...f, admin_note: e.target.value }))}
+                placeholder="打ち消す理由など" />
+            </div>
+            <div className="flex gap-2">
+              <button onClick={() => setShowDirectForm(false)} className="btn-secondary flex-1 text-sm">キャンセル</button>
+              <button onClick={handleDirectRegister} disabled={saving} className="btn-primary flex-1 text-sm">
+                {saving ? '登録中...' : '打ち消す'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </Layout>
   )
 }
