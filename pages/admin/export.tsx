@@ -198,6 +198,12 @@ function addRateMin(details: { rate: number; min: number; amount: number }[], ra
   else details.push({ rate, min, amount })
 }
 
+// 時給者の総支給額 = 勤務分 + 有給分 + 交通費（固定 + 応援）
+function grossOf(s: any): number {
+  const work = (s.rate_details ?? []).reduce((sum: number, d: any) => sum + d.amount, 0)
+  return work + (s.paid_leave_amount ?? 0) + (s.transport_fee ?? 0) + (s.support_transport_fee ?? 0)
+}
+
 export default function ExportPage() {
   const { user, profile, loading, isAdmin } = useAuth()
   const router = useRouter()
@@ -374,7 +380,7 @@ export default function ExportPage() {
           commute_per_trip_fee: (staff as any).commute_per_trip_fee ?? 0,
           support_transport_fee: supportFeesByUser[r.user_id] ?? 0,
           // 時給区分別
-          paid_leave_min: 0, paid_leave_amount: 0,
+          paid_leave_min: 0, paid_leave_amount: 0, paid_leave_rate: 0,
           // 時給額ごとの集計: { rate, min, amount }[]
           rate_details: [] as { rate: number; min: number; amount: number }[],
         }
@@ -526,9 +532,12 @@ export default function ExportPage() {
           }
 
           if (totalMin > 0) {
-            addRateMin(s.rate_details, minRate, totalMin)
+            // ※有給は時給セット（rate_details）には含めない。
+            //   含めると「時間N」が実働＋有給の合算になり、内訳が読めなくなるため、
+            //   有給は paid_leave_min / paid_leave_amount として独立管理し、CSVでも別列に出す。
             s.paid_leave_min = (s.paid_leave_min ?? 0) + totalMin
             s.paid_leave_amount = (s.paid_leave_amount ?? 0) + Math.round(totalMin / 60 * minRate)
+            s.paid_leave_rate = minRate
           }
         }
       }
@@ -610,40 +619,47 @@ export default function ExportPage() {
       // ── 時給パート ──
       const hourly = members.filter(s => s.pay_type === 'hourly')
       if (hourly.length > 0) {
-        const maxRate = Math.max(1, ...hourly.map(s => {
-          const d = (s.rate_details ?? []).length
-          const p = s.paid_leave_amount > 0 ? 1 : 0
-          return d + p
-        }))
+        // 時給パターンの最大数（有給は含めない＝別列で出すため）
+        const maxRate = Math.max(1, ...hourly.map(s => (s.rate_details ?? []).length))
         const rateHeaders = Array.from({ length: maxRate }, (_, i) =>
-          [`時給${i + 1}`, `時間${i + 1}`, `金額${i + 1}`]).flat()
+          [`時給${i + 1}`, `勤務時間${i + 1}`, `金額${i + 1}`]).flat()
 
         lines.push(`■ ${label} / 時給パート`)
+        lines.push('# 「勤務時間」は有給を含まない実働のみ。有給は別列。')
+        lines.push('# 総支給額 = 給与計（勤務＋有給） + 交通費（固定） + 応援交通費')
         lines.push([
-          '氏名', '部署', '出勤日数', '有休使用日数', '実働時間',
-          '交通費（固定）', '応援交通費', ...rateHeaders,
+          '氏名', '部署', '出勤日数', '有休使用日数',
+          ...rateHeaders,
+          '有給時給', '有給時間', '有給金額',
+          '給与計', '交通費（固定）', '応援交通費', '総支給額',
         ].map(esc).join(','))
 
         for (const s of hourly) {
-          const cells: any[] = []
           const details = [...(s.rate_details ?? [])].sort((a: any, b: any) => a.rate - b.rate)
-          for (const d of details) {
-            cells.push(d.rate, formatHM(d.min), d.amount)
-          }
-          if (s.paid_leave_amount > 0) {
-            cells.push('有給（参考・集計不要）', formatHM(s.paid_leave_min ?? 0), s.paid_leave_amount)
-          }
+
+          const cells: any[] = []
+          for (const d of details) cells.push(d.rate, formatHM(d.min), d.amount)
           while (cells.length < maxRate * 3) cells.push('')
+
+          const workAmount = details.reduce((sum, d) => sum + d.amount, 0)
+          const leaveAmount = s.paid_leave_amount ?? 0
+          const payTotal = workAmount + leaveAmount
+          const transport = (s.transport_fee ?? 0) + (s.support_transport_fee ?? 0)
+          const grossTotal = payTotal + transport
 
           lines.push([
             s.name,
             s.department,
             s.work_days,
             s.paid_leave_days,
-            formatHM(s.actual_minutes),
-            s.transport_fee,
-            s.support_transport_fee > 0 ? s.support_transport_fee : '',
             ...cells,
+            leaveAmount > 0 ? s.paid_leave_rate : '',
+            leaveAmount > 0 ? formatHM(s.paid_leave_min ?? 0) : '',
+            leaveAmount > 0 ? leaveAmount : '',
+            payTotal,
+            s.transport_fee ?? 0,
+            s.support_transport_fee > 0 ? s.support_transport_fee : '',
+            grossTotal,
           ].map(esc).join(','))
         }
         lines.push('')
@@ -684,7 +700,7 @@ export default function ExportPage() {
       '出勤日数', '欠勤日数', '有給取得日数',
       '遅刻回数', '遅刻時間', '早退時間',
       '実働時間', '残業時間', '休日出勤時間', '控除時間', '交通費',
-      '応援交通費',
+      '応援交通費', '総支給額（時給者のみ）',
       ...rateHeaders,
     ]
 
@@ -696,9 +712,9 @@ export default function ExportPage() {
         for (const d of details) {
           rateCells.push(`¥${d.rate.toLocaleString()}/h`, formatMinutes(d.min), `¥${d.amount.toLocaleString()}`, '')
         }
-        // 有給時給
+        // 有給（時給セットとは別枠。勤務時間には含まれていない）
         if (s.paid_leave_amount > 0) {
-          rateCells.push('有給（参考・集計不要）', formatMinutes(s.paid_leave_min ?? 0), `¥${s.paid_leave_amount.toLocaleString()}`, '')
+          rateCells.push(`有給 ¥${(s.paid_leave_rate ?? 0).toLocaleString()}/h`, formatMinutes(s.paid_leave_min ?? 0), `¥${s.paid_leave_amount.toLocaleString()}`, '')
         }
       }
       // 最大数まで空白で埋める
@@ -713,6 +729,7 @@ export default function ExportPage() {
         formatMinutes(s.holiday_work_minutes),
         formatMinutes(s.deduction_minutes), s.transport_fee,
         s.support_transport_fee > 0 ? `¥${s.support_transport_fee.toLocaleString()}` : '—',
+        s.pay_type === 'hourly' ? `¥${grossOf(s).toLocaleString()}` : '—',
         ...rateCells,
       ]
     })
@@ -809,15 +826,16 @@ export default function ExportPage() {
                   <th className="table-th">控除</th>
                   <th className="table-th">交通費</th>
                   <th className="table-th">応援交通費</th>
-                  <th className="table-th">時給内訳</th>
-                  <th className="table-th">有給時給</th>
+                  <th className="table-th">時給内訳（勤務のみ）</th>
+                  <th className="table-th">有給</th>
+                  <th className="table-th">総支給</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
                 {fetching ? (
-                  <tr><td colSpan={16} className="text-center py-8 text-gray-400">読込中...</td></tr>
+                  <tr><td colSpan={17} className="text-center py-8 text-gray-400">読込中...</td></tr>
                 ) : sorted.length === 0 ? (
-                  <tr><td colSpan={16} className="text-center py-8 text-gray-400">データがありません</td></tr>
+                  <tr><td colSpan={17} className="text-center py-8 text-gray-400">データがありません</td></tr>
                 ) : sorted.flatMap((s, idx) => {
                   const prevClinic = idx > 0 ? (sorted[idx - 1] as any).clinic : null
                   const curClinic = (s as any).clinic ?? 'tomita'
@@ -826,7 +844,7 @@ export default function ExportPage() {
                   if (showClinicHeader) {
                     rows.push(
                       <tr key={`clinic-${curClinic}-${idx}`}>
-                        <td colSpan={16} className="px-4 py-2 bg-gray-100 text-xs font-semibold text-gray-500 tracking-wide">
+                        <td colSpan={17} className="px-4 py-2 bg-gray-100 text-xs font-semibold text-gray-500 tracking-wide">
                           🏥 {CLINIC_LABEL[curClinic] ?? curClinic}
                         </td>
                       </tr>
@@ -870,11 +888,17 @@ export default function ExportPage() {
                     </td>
                     <td className="table-td text-xs">
                       {s.pay_type === 'hourly' && s.paid_leave_amount > 0 ? (
-                        <div className="text-emerald-600 font-medium">
+                        <div className="text-emerald-600 font-medium whitespace-nowrap">
+                          <div className="text-gray-400">¥{(s.paid_leave_rate ?? 0).toLocaleString()}/h</div>
                           <div>{formatMinutes(s.paid_leave_min ?? 0)}</div>
                           <div>¥{s.paid_leave_amount.toLocaleString()}</div>
                         </div>
                       ) : <span className="text-gray-300">—</span>}
+                    </td>
+                    <td className="table-td font-semibold text-clinic-700 whitespace-nowrap">
+                      {s.pay_type === 'hourly'
+                        ? `¥${grossOf(s).toLocaleString()}`
+                        : <span className="text-gray-300 font-normal">—</span>}
                     </td>
                   </tr>
                   )
