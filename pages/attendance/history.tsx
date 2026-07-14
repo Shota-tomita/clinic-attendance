@@ -86,7 +86,10 @@ function calcHolidayActualMin(r: any, approvedStartTime: string): number {
   const pmIn = r.pm_clock_in ? parseISO(r.pm_clock_in) : null
   const pmOut = r.pm_clock_out ? parseISO(r.pm_clock_out) : null
 
-  const firstRawIn = amIn ?? pmIn
+  const legacyIn = r.clock_in ? parseISO(r.clock_in) : null
+  const legacyOut = r.clock_out ? parseISO(r.clock_out) : null
+
+  const firstRawIn = amIn ?? pmIn ?? legacyIn
   if (!firstRawIn) return 0
 
   const approvedDt = parseISO(`${r.date}T${approvedStartTime}${approvedStartTime.length === 5 ? ':00' : ''}+09:00`)
@@ -101,6 +104,16 @@ function calcHolidayActualMin(r: any, approvedStartTime: string): number {
     const start = pmIn.getTime() === firstRawIn.getTime() ? effectiveFirstIn : pmIn
     total += Math.max(differenceInMinutes(pmOut, start), 0)
   }
+
+  // フォールバック：午前・午後がペアで揃っていない打刻パターンに対応
+  // 例）午前出勤 11:50 → 午後退勤 16:29（午前退勤・午後出勤なし）の連続1回打刻
+  // 上のペア判定では両方スキップされ 0 分になるため、
+  // 「最初の出勤（承認始業時刻でクリップ）〜 最後の退勤」で通しで計算する
+  if (total === 0) {
+    const lastOut = pmOut ?? amOut ?? legacyOut
+    if (lastOut) total = Math.max(differenceInMinutes(lastOut, effectiveFirstIn), 0)
+  }
+
   return total
 }
 
