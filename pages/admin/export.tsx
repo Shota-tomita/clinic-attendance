@@ -268,6 +268,44 @@ export default function ExportPage() {
       earlyStartMap[key][slot as 'am' | 'pm'] = e.start_time
     }
 
+    // 承認済み休日出勤を取得 → holidayWorkMap[userId_date] = start_time
+    const { data: holidayWorks } = await supabase
+      .from('holiday_work_requests')
+      .select('user_id, date, start_time')
+      .eq('status', 'approved')
+      .gte('date', start)
+      .lte('date', end)
+
+    const holidayWorkMap: Record<string, string> = {}
+    for (const h of holidayWorks ?? []) {
+      if (h.start_time) holidayWorkMap[`${h.user_id}_${h.date}`] = h.start_time
+    }
+
+    // 休日出勤の実働計算：承認された始業時刻を基準に計算
+    function calcHolidayActualMin(r: any, approvedStartTime: string): number {
+      const amIn = r.am_clock_in ? parseISO(r.am_clock_in) : null
+      const amOut = r.am_clock_out ? parseISO(r.am_clock_out) : null
+      const pmIn = r.pm_clock_in ? parseISO(r.pm_clock_in) : null
+      const pmOut = r.pm_clock_out ? parseISO(r.pm_clock_out) : null
+
+      const firstRawIn = amIn ?? pmIn
+      if (!firstRawIn) return 0
+
+      const approvedDt = parseISO(`${r.date}T${approvedStartTime}${approvedStartTime.length === 5 ? ':00' : ''}+09:00`)
+      const effectiveFirstIn = firstRawIn < approvedDt ? approvedDt : firstRawIn
+
+      let total = 0
+      if (amIn && amOut) {
+        const s = amIn.getTime() === firstRawIn.getTime() ? effectiveFirstIn : amIn
+        total += Math.max(differenceInMinutes(amOut, s), 0)
+      }
+      if (pmIn && pmOut) {
+        const s = pmIn.getTime() === firstRawIn.getTime() ? effectiveFirstIn : pmIn
+        total += Math.max(differenceInMinutes(pmOut, s), 0)
+      }
+      return total
+    }
+
     // 時給設定を取得
     const { data: allRates } = await supabase.from('part_time_rates').select('*')
     const ratesByUser: Record<string, any[]> = {}
@@ -310,22 +348,36 @@ export default function ExportPage() {
       const earlyKey = `${r.user_id}_${r.date}`
       const amEarly = earlyStartMap[earlyKey]?.am
       const pmEarly = earlyStartMap[earlyKey]?.pm
-      const scheduledMin = calcScheduledMin(blocks)
-      const actualMin = calcActualMin(r, blocks, amEarly, pmEarly)
-      const lateMin = calcLateMin(r, blocks)
+      const holidayKey = `${r.user_id}_${r.date}`
+      const holidayStart = holidayWorkMap[holidayKey]
       const staffData = staffById[r.user_id]
       const isPartTime = staffData?.employment_type === 'part_time'
-      const overtimeMin = isPartTime
-        ? (r.overtime_minutes ?? 0)
-        : (scheduledMin > 0 ? Math.max(actualMin - scheduledMin, 0) : 0)
-      // 控除計算：早退 or 早上がり否認 or (遅刻かつ所定>実働) のみ
-      const isEarlyLeave = r.clock_out_reason === 'early_leave' || r.status === 'early_leave'
-      const isEarlyFinishRejected = r.early_finish_status === 'rejected'
-      const hasLate = lateMin > 0
-      const isShort = scheduledMin > 0 && actualMin < scheduledMin
-      const deductionMin = (isEarlyLeave || isEarlyFinishRejected || (hasLate && isShort))
-        ? Math.max(scheduledMin - actualMin, 0)
-        : 0
+
+      let scheduledMin: number, actualMin: number, lateMin: number, overtimeMin: number, deductionMin: number
+
+      if (holidayStart) {
+        // 承認済み休日出勤：所定0・実働は全て残業扱い
+        scheduledMin = 0
+        actualMin = calcHolidayActualMin(r, holidayStart)
+        lateMin = 0
+        overtimeMin = actualMin
+        deductionMin = 0
+      } else {
+        scheduledMin = calcScheduledMin(blocks)
+        actualMin = calcActualMin(r, blocks, amEarly, pmEarly)
+        lateMin = calcLateMin(r, blocks)
+        overtimeMin = isPartTime
+          ? (r.overtime_minutes ?? 0)
+          : (scheduledMin > 0 ? Math.max(actualMin - scheduledMin, 0) : 0)
+        // 控除計算：早退 or 早上がり否認 or (遅刻かつ所定>実働) のみ
+        const isEarlyLeave = r.clock_out_reason === 'early_leave' || r.status === 'early_leave'
+        const isEarlyFinishRejected = r.early_finish_status === 'rejected'
+        const hasLate = lateMin > 0
+        const isShort = scheduledMin > 0 && actualMin < scheduledMin
+        deductionMin = (isEarlyLeave || isEarlyFinishRejected || (hasLate && isShort))
+          ? Math.max(scheduledMin - actualMin, 0)
+          : 0
+      }
 
       if (['present','late','early_leave'].includes(r.status)) {
         s.work_days++
@@ -340,29 +392,39 @@ export default function ExportPage() {
         if (s.pay_type === 'hourly') {
           const rates = ratesByUser[r.user_id] ?? []
           const dow = getDay(parseISO(r.date))
-          const { amMin, pmMin } = calcAmPmMin(r, blocks, amEarly, pmEarly)
-          const overtimeMin = r.overtime_minutes ?? 0
 
-          if (amMin > 0) {
-            const rate = getRateType(dow, 'am', rates) ?? s.hourly_rate
-            // 実働分から時間外を除いた通常分
-            const normalMin = Math.max(amMin - overtimeMin, 0)
-            if (normalMin > 0) addRateMin(s.rate_details, rate, normalMin)
-          }
-          if (pmMin > 0) {
-            const rate = getRateType(dow, 'pm', rates) ?? s.hourly_rate
-            const normalMin = amMin > 0 ? pmMin : Math.max(pmMin - overtimeMin, 0)
-            if (normalMin > 0) addRateMin(s.rate_details, rate, normalMin)
-          }
-          // 時間外分（×1.25）
-          if (overtimeMin > 0) {
-            // 時間外は最後の退勤スロットの時給をベースに
-            const dow2 = getDay(parseISO(r.date))
-            const lastRate = pmMin > 0
-              ? (getRateType(dow2, 'pm', rates) ?? s.hourly_rate)
-              : (getRateType(dow2, 'am', rates) ?? s.hourly_rate)
-            const otRate = Math.round(lastRate * 1.25)
-            addRateMin(s.rate_details, otRate, overtimeMin)
+          if (holidayStart) {
+            // 休日出勤：実働全てを時間外割増（×1.25）で計上
+            if (actualMin > 0) {
+              const baseRate = getRateType(dow, 'am', rates) ?? getRateType(dow, 'pm', rates) ?? s.hourly_rate
+              const otRate = Math.round(baseRate * 1.25)
+              addRateMin(s.rate_details, otRate, actualMin)
+            }
+          } else {
+            const { amMin, pmMin } = calcAmPmMin(r, blocks, amEarly, pmEarly)
+            const otMin = r.overtime_minutes ?? 0
+
+            if (amMin > 0) {
+              const rate = getRateType(dow, 'am', rates) ?? s.hourly_rate
+              // 実働分から時間外を除いた通常分
+              const normalMin = Math.max(amMin - otMin, 0)
+              if (normalMin > 0) addRateMin(s.rate_details, rate, normalMin)
+            }
+            if (pmMin > 0) {
+              const rate = getRateType(dow, 'pm', rates) ?? s.hourly_rate
+              const normalMin = amMin > 0 ? pmMin : Math.max(pmMin - otMin, 0)
+              if (normalMin > 0) addRateMin(s.rate_details, rate, normalMin)
+            }
+            // 時間外分（×1.25）
+            if (otMin > 0) {
+              // 時間外は最後の退勤スロットの時給をベースに
+              const dow2 = getDay(parseISO(r.date))
+              const lastRate = pmMin > 0
+                ? (getRateType(dow2, 'pm', rates) ?? s.hourly_rate)
+                : (getRateType(dow2, 'am', rates) ?? s.hourly_rate)
+              const otRate = Math.round(lastRate * 1.25)
+              addRateMin(s.rate_details, otRate, otMin)
+            }
           }
         }
       }
