@@ -66,8 +66,9 @@ export default function AdminDelayRequestsPage() {
 
   const openReview = async (req: any) => {
     setReviewingId(req.id)
-    setApprovedMinutes(String(req.requested_minutes ?? ''))
-    setAdminNote('')
+    // 承認済みは既存の承認分数を、未審査は申請分数をデフォルト表示
+    setApprovedMinutes(String(req.approved_minutes ?? req.requested_minutes ?? ''))
+    setAdminNote(req.admin_note ?? '')
     setCertUrl(null)
     if (req.certificate_url) {
       const { data } = await supabase.storage
@@ -129,6 +130,16 @@ export default function AdminDelayRequestsPage() {
     fetchRequests()
   }
 
+  // 申請そのものを削除（打ち消しの取り消し・誤登録の削除）
+  const handleDeleteRequest = async (id: string) => {
+    if (!confirm('この申請を削除しますか？削除すると遅刻控除・回数の計算に元の状態が反映されます。')) return
+    setSaving(true)
+    await supabase.from('delay_requests').delete().eq('id', id)
+    setSaving(false)
+    setReviewingId(null)
+    fetchRequests()
+  }
+
   const filtered = requests.filter(r => filter === 'all' || r.status === 'pending')
   const pendingCount = requests.filter(r => r.status === 'pending').length
 
@@ -187,9 +198,9 @@ export default function AdminDelayRequestsPage() {
                 </div>
                 <div className="flex flex-col items-end gap-2">
                   <span className={`badge ${STATUS_COLORS[r.status]}`}>{STATUS_LABELS[r.status]}</span>
-                  {r.status === 'pending' && (
-                    <button onClick={() => openReview(r)} className="btn-secondary text-xs px-2 py-1">審査</button>
-                  )}
+                  <button onClick={() => openReview(r)} className="btn-secondary text-xs px-2 py-1">
+                    {r.status === 'pending' ? '審査' : '編集'}
+                  </button>
                 </div>
               </div>
             ))}
@@ -202,13 +213,21 @@ export default function AdminDelayRequestsPage() {
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
             <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-6 space-y-4">
-              <h2 className="font-semibold text-gray-800">遅延申請の審査</h2>
+              <h2 className="font-semibold text-gray-800">
+                {req.status === 'pending' ? '遅延申請の審査' : '遅延申請の編集'}
+              </h2>
               <div className="bg-gray-50 rounded-xl p-3 text-sm space-y-1.5">
                 <div><span className="text-gray-500">申請者:</span> {staffNames[req.user_id]}</div>
                 <div><span className="text-gray-500">日付:</span> {req.date}</div>
                 <div><span className="text-gray-500">証明書記載分数:</span> {req.certificate_minutes ?? '—'}分</div>
                 <div><span className="text-gray-500">申請分数:</span> {req.requested_minutes}分</div>
                 {req.reason && <div><span className="text-gray-500">理由:</span> {req.reason}</div>}
+                {req.status !== 'pending' && (
+                  <div className="text-xs text-gray-400 pt-1 border-t border-gray-200">
+                    現在のステータス: {STATUS_LABELS[req.status]}
+                    {req.status === 'approved' && `（承認分数: ${req.approved_minutes}分）`}
+                  </div>
+                )}
               </div>
               {certUrl && (
                 <a href={certUrl} target="_blank" rel="noreferrer" className="block">
@@ -225,11 +244,16 @@ export default function AdminDelayRequestsPage() {
                 <input className="input" value={adminNote}
                   onChange={e => setAdminNote(e.target.value)} placeholder="スタッフへのコメント" />
               </div>
-              <div className="flex gap-2">
+              <div className="flex gap-2 flex-wrap">
                 <button onClick={() => setReviewingId(null)} className="btn-secondary flex-1 text-sm">閉じる</button>
-                <button onClick={() => handleReject(req.id)} disabled={saving} className="btn-danger flex-1 text-sm">却下</button>
+                <button onClick={() => handleDeleteRequest(req.id)} disabled={saving} className="btn-danger flex-1 text-sm">
+                  削除
+                </button>
+                {req.status !== 'rejected' && (
+                  <button onClick={() => handleReject(req.id)} disabled={saving} className="btn-danger flex-1 text-sm">却下</button>
+                )}
                 <button onClick={() => handleApprove(req)} disabled={saving} className="btn-primary flex-1 text-sm">
-                  {saving ? '処理中...' : '承認'}
+                  {saving ? '処理中...' : req.status === 'approved' ? '分数を更新' : '承認'}
                 </button>
               </div>
             </div>
