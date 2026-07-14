@@ -7,6 +7,13 @@ import { getCurrentMonth, getMonthRange, formatMinutes } from '@/lib/utils'
 import { format, parseISO, differenceInMinutes, getDay } from 'date-fns'
 import { ja } from 'date-fns/locale'
 
+// Excelが「時刻」として認識できる h:mm 形式（例: 7:12）
+// 24h超も [h]:mm 書式のセルにそのまま貼り付け可能
+function formatHM(min: number): string {
+  const m = Math.max(0, Math.round(min))
+  return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}`
+}
+
 function calcActualMin(r: any, blocks: any[], amEarlyStartTime?: string, pmEarlyStartTime?: string): number {
   const sorted = [...blocks].sort((a: any, b: any) => a.sort_order - b.sort_order)
   const amBlock = sorted.find((b: any) => b.sort_order === 0)
@@ -344,6 +351,10 @@ export default function ExportPage() {
           work_days: 0, absent_days: 0, late_count: 0,
           late_minutes: 0, early_leave_count: 0,
           overtime_minutes: 0, deduction_minutes: 0,
+          // 税理士提出用：休日出勤は残業と分離、遅刻控除と早退控除も分離
+          holiday_work_minutes: 0,
+          late_deduction_minutes: 0,
+          early_leave_minutes: 0,
           actual_minutes: 0, paid_leave_days: 0,
           transport_fee: staff.commute_monthly_fee ?? 0,
           commute_fee_type: (staff as any).commute_fee_type ?? 'monthly',
@@ -367,13 +378,16 @@ export default function ExportPage() {
       const isPartTime = staffData?.employment_type === 'part_time'
 
       let scheduledMin: number, actualMin: number, lateMin: number, overtimeMin: number, deductionMin: number
+      let holidayMin = 0, lateDedMin = 0, earlyDedMin = 0
 
       if (holidayStart) {
-        // 承認済み休日出勤：所定0・実働は全て残業扱い
+        // 承認済み休日出勤：所定0・実働は全て「休日出勤時間」として計上
+        // ※税理士ルール：超勤（残業）に休日出勤は含めない。別枠で計算・支給する
         scheduledMin = 0
         actualMin = calcHolidayActualMin(r, holidayStart)
         lateMin = 0
-        overtimeMin = actualMin
+        overtimeMin = 0
+        holidayMin = actualMin
         deductionMin = 0
       } else {
         scheduledMin = calcScheduledMin(blocks)
@@ -399,6 +413,8 @@ export default function ExportPage() {
           const remainingShortfall = Math.max(shortfall - lateDeductionMin, 0)
           const earlyLeaveDeductionMin = (isEarlyLeave || isEarlyFinishRejected) ? remainingShortfall : 0
           deductionMin = lateDeductionMin + earlyLeaveDeductionMin
+          lateDedMin = lateDeductionMin
+          earlyDedMin = earlyLeaveDeductionMin
         }
       }
 
@@ -409,6 +425,9 @@ export default function ExportPage() {
         }
         s.overtime_minutes += overtimeMin
         s.deduction_minutes += deductionMin
+        s.holiday_work_minutes += holidayMin
+        s.late_deduction_minutes += lateDedMin
+        s.early_leave_minutes += earlyDedMin
         s.actual_minutes += actualMin
 
         // 時給区分別の計算（時給制スタッフのみ）
@@ -526,7 +545,110 @@ export default function ExportPage() {
     return 0
   })
 
+  // ─── 税理士提出用CSV（元データExcelのブロック構成に一致） ───────────
   const exportCSV = () => {
+    setExporting(true)
+
+    const esc = (v: any) => `"${String(v ?? '').replace(/"/g, '""')}"`
+    const lines: string[] = []
+    lines.push(`# ${format(parseISO(month + '-01'), 'yyyy年M月', { locale: ja })} 勤怠データ（税理士提出用）`)
+    lines.push(`# 出力日: ${format(new Date(), 'yyyy/MM/dd HH:mm')}`)
+    lines.push('# 各ブロックをそのまま「元データ」Excelの該当欄に貼り付けてください')
+    lines.push('# 時間は h:mm 形式（Excelが時刻として認識します）')
+    lines.push('# 超勤時間に休日出勤は含まれていません（別列で計上）')
+    lines.push('')
+
+    // 固定給（正社員）ブロックのヘッダー：Excelテンプレートと同じ列順
+    const FIXED_HEADERS = [
+      '氏名', '部署', '超勤時間', '遅刻時間', '早退時間', '遅刻＋早退',
+      '有休使用日数', '勤務日数', '休日出勤時間', '欠勤日数',
+      '交通費（固定）', '応援交通費',
+    ]
+
+    for (const clinic of CLINIC_ORDER) {
+      const members = sorted.filter(s => ((s as any).clinic ?? 'tomita') === clinic)
+      if (members.length === 0) continue
+      const label = CLINIC_LABEL[clinic] ?? clinic
+
+      // ── 固定給（月給者） ──
+      const fixed = members.filter(s => s.pay_type !== 'hourly')
+      if (fixed.length > 0) {
+        lines.push(`■ ${label} / 固定給`)
+        lines.push(FIXED_HEADERS.map(esc).join(','))
+        for (const s of fixed) {
+          lines.push([
+            s.name,
+            s.department,
+            formatHM(s.overtime_minutes),
+            formatHM(s.late_deduction_minutes),
+            formatHM(s.early_leave_minutes),
+            formatHM(s.late_deduction_minutes + s.early_leave_minutes),
+            s.paid_leave_days,
+            s.work_days,
+            formatHM(s.holiday_work_minutes),
+            s.absent_days,
+            s.transport_fee,
+            s.support_transport_fee > 0 ? s.support_transport_fee : '',
+          ].map(esc).join(','))
+        }
+        lines.push('')
+      }
+
+      // ── 時給パート ──
+      const hourly = members.filter(s => s.pay_type === 'hourly')
+      if (hourly.length > 0) {
+        const maxRate = Math.max(1, ...hourly.map(s => {
+          const d = (s.rate_details ?? []).length
+          const p = s.paid_leave_amount > 0 ? 1 : 0
+          return d + p
+        }))
+        const rateHeaders = Array.from({ length: maxRate }, (_, i) =>
+          [`時給${i + 1}`, `時間${i + 1}`, `金額${i + 1}`]).flat()
+
+        lines.push(`■ ${label} / 時給パート`)
+        lines.push([
+          '氏名', '部署', '出勤日数', '有休使用日数', '実働時間',
+          '交通費（固定）', '応援交通費', ...rateHeaders,
+        ].map(esc).join(','))
+
+        for (const s of hourly) {
+          const cells: any[] = []
+          const details = [...(s.rate_details ?? [])].sort((a: any, b: any) => a.rate - b.rate)
+          for (const d of details) {
+            cells.push(d.rate, formatHM(d.min), d.amount)
+          }
+          if (s.paid_leave_amount > 0) {
+            cells.push('有給（参考・集計不要）', formatHM(s.paid_leave_min ?? 0), s.paid_leave_amount)
+          }
+          while (cells.length < maxRate * 3) cells.push('')
+
+          lines.push([
+            s.name,
+            s.department,
+            s.work_days,
+            s.paid_leave_days,
+            formatHM(s.actual_minutes),
+            s.transport_fee,
+            s.support_transport_fee > 0 ? s.support_transport_fee : '',
+            ...cells,
+          ].map(esc).join(','))
+        }
+        lines.push('')
+      }
+    }
+
+    const blob = new Blob(['\uFEFF' + lines.join('\n')], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `勤怠データ_税理士提出用_${month}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+    setExporting(false)
+  }
+
+  // ─── 従来形式のフラットCSV（社内確認用に残す） ───────────────────
+  const exportRawCSV = () => {
     setExporting(true)
 
     // 時給内訳の最大パターン数（スタッフごとに異なるため最大を求める）
@@ -547,8 +669,8 @@ export default function ExportPage() {
     const headers = [
       '氏名', '部署', '雇用形態',
       '出勤日数', '欠勤日数', '有給取得日数',
-      '遅刻回数', '遅刻時間', '早退回数',
-      '実働時間', '残業時間', '控除時間', '交通費',
+      '遅刻回数', '遅刻時間', '早退時間',
+      '実働時間', '残業時間', '休日出勤時間', '控除時間', '交通費',
       '応援交通費',
       ...rateHeaders,
     ]
@@ -573,8 +695,9 @@ export default function ExportPage() {
         s.name, s.department,
         s.employment_type === 'full_time' ? '正社員' : 'パート',
         s.work_days, s.absent_days, s.paid_leave_days,
-        s.late_count, formatMinutes(s.late_minutes), s.early_leave_count,
+        s.late_count, formatMinutes(s.late_deduction_minutes), formatMinutes(s.early_leave_minutes),
         formatMinutes(s.actual_minutes), formatMinutes(s.overtime_minutes),
+        formatMinutes(s.holiday_work_minutes),
         formatMinutes(s.deduction_minutes), s.transport_fee,
         s.support_transport_fee > 0 ? `¥${s.support_transport_fee.toLocaleString()}` : '—',
         ...rateCells,
@@ -628,7 +751,11 @@ export default function ExportPage() {
           </div>
           <button onClick={exportCSV} disabled={exporting || preview.length === 0}
             className="btn-primary text-sm mt-4">
-            📥 CSVダウンロード
+            📥 税理士提出用CSV
+          </button>
+          <button onClick={exportRawCSV} disabled={exporting || preview.length === 0}
+            className="text-sm mt-4 px-3 py-2 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40">
+            📄 詳細CSV（社内用）
           </button>
         </div>
 
@@ -664,6 +791,8 @@ export default function ExportPage() {
                   <th className="table-th">遅刻</th>
                   <th className="table-th">実働</th>
                   <th className="table-th">残業</th>
+                  <th className="table-th">休日出勤</th>
+                  <th className="table-th">早退</th>
                   <th className="table-th">控除</th>
                   <th className="table-th">交通費</th>
                   <th className="table-th">応援交通費</th>
@@ -673,9 +802,9 @@ export default function ExportPage() {
               </thead>
               <tbody className="divide-y divide-gray-50">
                 {fetching ? (
-                  <tr><td colSpan={14} className="text-center py-8 text-gray-400">読込中...</td></tr>
+                  <tr><td colSpan={16} className="text-center py-8 text-gray-400">読込中...</td></tr>
                 ) : sorted.length === 0 ? (
-                  <tr><td colSpan={14} className="text-center py-8 text-gray-400">データがありません</td></tr>
+                  <tr><td colSpan={16} className="text-center py-8 text-gray-400">データがありません</td></tr>
                 ) : sorted.flatMap((s, idx) => {
                   const prevClinic = idx > 0 ? (sorted[idx - 1] as any).clinic : null
                   const curClinic = (s as any).clinic ?? 'tomita'
@@ -684,7 +813,7 @@ export default function ExportPage() {
                   if (showClinicHeader) {
                     rows.push(
                       <tr key={`clinic-${curClinic}-${idx}`}>
-                        <td colSpan={14} className="px-4 py-2 bg-gray-100 text-xs font-semibold text-gray-500 tracking-wide">
+                        <td colSpan={16} className="px-4 py-2 bg-gray-100 text-xs font-semibold text-gray-500 tracking-wide">
                           🏥 {CLINIC_LABEL[curClinic] ?? curClinic}
                         </td>
                       </tr>
@@ -706,6 +835,8 @@ export default function ExportPage() {
                     <td className="table-td"><span className={s.late_count > 0 ? 'text-amber-600 font-medium' : 'text-gray-400'}>{s.late_count}回</span></td>
                     <td className="table-td">{s.actual_minutes > 0 ? formatMinutes(s.actual_minutes) : '—'}</td>
                     <td className="table-td text-amber-600">{s.overtime_minutes > 0 ? formatMinutes(s.overtime_minutes) : '—'}</td>
+                    <td className="table-td text-indigo-600">{s.holiday_work_minutes > 0 ? formatMinutes(s.holiday_work_minutes) : '—'}</td>
+                    <td className="table-td text-red-500">{s.early_leave_minutes > 0 ? formatMinutes(s.early_leave_minutes) : '—'}</td>
                     <td className="table-td text-red-500">{s.deduction_minutes > 0 ? formatMinutes(s.deduction_minutes) : '—'}</td>
                     <td className="table-td text-clinic-700 font-medium">{s.transport_fee > 0 ? `¥${s.transport_fee.toLocaleString()}` : '—'}</td>
                     <td className="table-td text-clinic-700 font-medium">
