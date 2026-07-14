@@ -79,6 +79,31 @@ function calcActualMin(r: any, shiftBlocks: any[], amEarlyStartTime?: string, pm
   return total
 }
 
+// 休日出勤（承認済み）の実働時間計算：承認された始業時刻を基準に計算
+function calcHolidayActualMin(r: any, approvedStartTime: string): number {
+  const amIn = r.am_clock_in ? parseISO(r.am_clock_in) : null
+  const amOut = r.am_clock_out ? parseISO(r.am_clock_out) : null
+  const pmIn = r.pm_clock_in ? parseISO(r.pm_clock_in) : null
+  const pmOut = r.pm_clock_out ? parseISO(r.pm_clock_out) : null
+
+  const firstRawIn = amIn ?? pmIn
+  if (!firstRawIn) return 0
+
+  const approvedDt = parseISO(`${r.date}T${approvedStartTime}${approvedStartTime.length === 5 ? ':00' : ''}+09:00`)
+  const effectiveFirstIn = firstRawIn < approvedDt ? approvedDt : firstRawIn
+
+  let total = 0
+  if (amIn && amOut) {
+    const start = amIn.getTime() === firstRawIn.getTime() ? effectiveFirstIn : amIn
+    total += Math.max(differenceInMinutes(amOut, start), 0)
+  }
+  if (pmIn && pmOut) {
+    const start = pmIn.getTime() === firstRawIn.getTime() ? effectiveFirstIn : pmIn
+    total += Math.max(differenceInMinutes(pmOut, start), 0)
+  }
+  return total
+}
+
 // 半日有給の所定時間計算
 function calcScheduledMinWithHalfLeave(r: any, shiftBlocks: any[]): number {
   const base = calcScheduledMin(shiftBlocks)
@@ -258,6 +283,7 @@ export default function AttendanceHistoryPage() {
   const [records, setRecords] = useState<any[]>([])
   const [shiftMap, setShiftMap] = useState<Record<string, any[]>>({})
   const [earlyStartMap, setEarlyStartMap] = useState<Record<string, { am?: string, pm?: string }>>({}) // date -> {am, pm}
+  const [holidayWorkMap, setHolidayWorkMap] = useState<Record<string, string>>({}) // date -> start_time（承認済み休日出勤）
   const [staffList, setStaffList] = useState<Profile[]>([])
   const [selectedStaffId, setSelectedStaffId] = useState('')
   const [fetching, setFetching] = useState(false)
@@ -301,6 +327,7 @@ export default function AttendanceHistoryPage() {
       fetchRecords()
       fetchShifts()
       fetchEarlyStarts()
+      fetchHolidayWork()
     }
   }, [selectedStaffId, month])
 
@@ -372,6 +399,23 @@ export default function AttendanceHistoryPage() {
       map[d.date][slot] = d.start_time
     }
     setEarlyStartMap(map)
+  }
+
+  const fetchHolidayWork = async () => {
+    if (!selectedStaffId) return
+    const { start, end } = getMonthRange(month)
+    const { data } = await supabase
+      .from('holiday_work_requests')
+      .select('date, start_time')
+      .eq('user_id', selectedStaffId)
+      .eq('status', 'approved')
+      .gte('date', start)
+      .lte('date', end)
+    const map: Record<string, string> = {}
+    for (const d of data ?? []) {
+      if (d.start_time) map[d.date] = d.start_time
+    }
+    setHolidayWorkMap(map)
   }
 
   const fetchShifts = async () => {
@@ -553,6 +597,24 @@ export default function AttendanceHistoryPage() {
     const blocks = shiftMap[r.date] ?? []
     const earlyStartAm = earlyStartMap[r.date]?.am
     const earlyStartPm = earlyStartMap[r.date]?.pm
+    const holidayStart = holidayWorkMap[r.date]
+
+    // 承認済み休日出勤日：所定時間0・実働は全て残業扱い
+    if (holidayStart) {
+      const actualMin = calcHolidayActualMin(r, holidayStart)
+      return {
+        ...r,
+        _scheduledMin: 0,
+        _actualMin: actualMin,
+        _lateMin: 0,
+        _amLate: 0,
+        _pmLate: 0,
+        _overtimeMin: actualMin,
+        _deductionMin: 0,
+        _isHolidayWork: true,
+      }
+    }
+
     const scheduledMin = calcScheduledMinWithHalfLeave(r, blocks)
     const actualMin = calcActualMin(r, blocks, earlyStartAm, earlyStartPm)
     const lateMin = calcLateMin(r, blocks)
@@ -575,7 +637,7 @@ export default function AttendanceHistoryPage() {
     const deductionMin = (isEarlyLeave || isEarlyFinishRejected || (hasLate && isShort))
       ? Math.max(scheduledMin - actualMin, 0)
       : 0
-    return { ...r, _scheduledMin: scheduledMin, _actualMin: actualMin, _lateMin: lateMin, _amLate: amLate, _pmLate: pmLate, _overtimeMin: overtimeMin, _deductionMin: deductionMin }
+    return { ...r, _scheduledMin: scheduledMin, _actualMin: actualMin, _lateMin: lateMin, _amLate: amLate, _pmLate: pmLate, _overtimeMin: overtimeMin, _deductionMin: deductionMin, _isHolidayWork: false }
   })
 
   // 院長用：月の全日付を生成（レコードなし日にも直接入力ボタンを表示するため）
@@ -809,6 +871,9 @@ export default function AttendanceHistoryPage() {
                     <td className="table-td">
                       <div className="flex flex-col gap-1">
                         <span className={`badge ${statusColor(r.status)}`}>{statusLabel(r.status)}</span>
+                        {r._isHolidayWork && (
+                          <span className="badge text-[10px] bg-purple-100 text-purple-700">🏖️ 休日出勤</span>
+                        )}
                         {r.early_finish_status !== 'not_required' && (
                           <span className={`badge text-[10px] ${earlyFinishStatusColor(r.early_finish_status)}`}>
                             {earlyFinishStatusLabel(r.early_finish_status)}
